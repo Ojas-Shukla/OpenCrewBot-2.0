@@ -31,6 +31,7 @@
 | `pnpm build` | Pass |
 | Mock-mode production smoke test | Pass: 3 bots, 1 room, 8 skills, 4-task Chief of Staff plan |
 | Final mock-mode production smoke test | Pass: 8 bots, 4 rooms, 8 skills, 4-task Chief of Staff plan |
+| Repeatable `pnpm test:smoke` | Pass: 8 agents, 4 rooms, 8 skills, Chief of Staff plan |
 
 ## Phase 0 modified files
 
