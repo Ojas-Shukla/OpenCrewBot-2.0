@@ -56,8 +56,8 @@ export const api = {
   deleteRoom: (id: string) => call(`/api/rooms/${id}`, { method: "DELETE" }),
   messages: (id: ConversationId) => call<{ messages: ChatMessage[]; running: string[] }>(`${conv(id)}/messages`),
   send: (id: ConversationId, text: string) => call<{ message: ChatMessage }>(`${conv(id)}/messages`, { method: "POST", json: { text } }),
-  approve: (id: ConversationId, botId: string, toolCallId: string, approve: boolean) =>
-    call(`${conv(id)}/approval`, { method: "POST", json: { botId, toolCallId, approve } }),
+  approve: (id: ConversationId, botId: string, toolCallId: string, approve: boolean, always = false) =>
+    call(`${conv(id)}/approval`, { method: "POST", json: { botId, toolCallId, approve, always } }),
   answer: (id: ConversationId, botId: string, toolCallId: string, answer: string) =>
     call(`${conv(id)}/answer`, { method: "POST", json: { botId, toolCallId, answer } }),
   stop: (id: ConversationId) => call(`${conv(id)}/stop`, { method: "POST" }),
@@ -85,7 +85,7 @@ export const api = {
     call<{ bot: Bot }>("/api/bots/factory", { method: "POST", json: { instruction, name, model } }),
   skills: () => call<{ skills: ReusableSkill[] }>("/api/skills"),
   approvals: () => call<{ approvals: ApprovalRequest[] }>("/api/approvals"),
-  resolveApproval: (id: string, resolution: "allow_once" | "reject") =>
+  resolveApproval: (id: string, resolution: "allow_once" | "allow_always" | "reject") =>
     call<{ approval: ApprovalRequest }>(`/api/approvals/${id}`, { method: "POST", json: { resolution } }),
   workflows: () => call<{ workflows: WorkflowTemplate[] }>("/api/workflows"),
   createWorkflow: (input: { name: string; description: string; instruction: string; taskTemplates: Array<{ key: string; title: string; description: string; assignedBotId: string; dependencies?: string[] }> }) =>

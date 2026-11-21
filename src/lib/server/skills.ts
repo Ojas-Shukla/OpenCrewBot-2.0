@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ReusableSkill } from "@/lib/shared/types";
-import { listSkills, saveSkill } from "./db";
+import type { Bot, ReusableSkill } from "@/lib/shared/types";
+import { getBot, listSkills, saveBot, saveSkill } from "./db";
+import { publish } from "./bus";
+import { InputError } from "./errors";
 
 const skillDefinitions: Omit<ReusableSkill, "id" | "createdAt" | "updatedAt">[] = [
   { name: "Market Research", category: "research", description: "Research markets, customers and industry trends.", instructions: "Define the market, find authoritative sources, compare evidence and separate verified facts from hypotheses.", outputFormat: "Executive summary, evidence table and source list", tools: ["web_search", "memory"] },
@@ -28,4 +30,31 @@ export async function seedSkills(): Promise<ReusableSkill[]> {
     });
   }
   return listSkills();
+}
+
+export { identifyRelevantSkills } from "./execution-policy";
+
+export async function loadSkillForBot(botId: string, skillNameOrId: string): Promise<{ bot: Bot; skill: ReusableSkill }> {
+  const bot = await getBot(botId);
+  if (!bot) throw new InputError(`Agent ${botId} not found.`);
+  const allSkills = await listSkills();
+  const lower = skillNameOrId.trim().toLowerCase();
+  const found = allSkills.find((s) => s.id === skillNameOrId || s.name.toLowerCase() === lower || s.name.toLowerCase().includes(lower));
+  if (!found) throw new InputError(`Skill "${skillNameOrId}" not found in ecosystem.`);
+
+  const currentSkillIds = new Set(bot.skillIds ?? []);
+  currentSkillIds.add(found.id);
+  bot.skillIds = Array.from(currentSkillIds);
+
+  if (found.tools.includes("web_search")) bot.tools.webSearch = true;
+  if (found.tools.includes("code_mode")) bot.tools.codeMode = true;
+  if (found.tools.includes("memory")) bot.tools.memory = true;
+  if (found.tools.includes("browser")) bot.tools.browser = true;
+
+  await saveBot(bot);
+  const runtime = await import("./runtime");
+  await runtime.resetBot(bot.id);
+  publish({ type: "bots-changed" });
+
+  return { bot, skill: found };
 }

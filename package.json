@@ -9,7 +9,8 @@
     "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:unit": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test:unit": "node --experimental-strip-types --test tests/*.test.mjs",
+    "scheduler": "node scripts/scheduler-daemon.mjs"
   },
   "dependencies": {
     "@composio/core": "^0.23.0",

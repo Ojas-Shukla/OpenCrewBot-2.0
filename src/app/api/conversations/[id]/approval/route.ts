@@ -4,7 +4,7 @@ import { respondToApproval } from "@/lib/server/runtime";
 export async function POST(request: Request, ctx: RouteContext<"/api/conversations/[id]/approval">) {
   const id = conversationParam((await ctx.params).id);
   return handle(async () => {
-    const { botId, toolCallId, approve } = await body<{ botId: string; toolCallId: string; approve: boolean }>(request);
-    await respondToApproval(id, botId, toolCallId, Boolean(approve));
+    const { botId, toolCallId, approve, always } = await body<{ botId: string; toolCallId: string; approve: boolean; always?: boolean }>(request);
+    await respondToApproval(id, botId, toolCallId, Boolean(approve), Boolean(always));
   });
 }

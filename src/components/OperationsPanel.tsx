@@ -85,7 +85,7 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const resolve = async (id: string, resolution: "allow_once" | "reject") => {
+  const resolve = async (id: string, resolution: "allow_once" | "allow_always" | "reject") => {
     await api.resolveApproval(id, resolution);
     await reload();
   };
@@ -224,6 +224,7 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
               <p className="mt-1 text-[12.5px] text-mute">{item.preview}</p>
               <div className="mt-2 flex gap-2">
                 <Button size="sm" variant="primary" onClick={() => void resolve(item.id, "allow_once")}>Allow once</Button>
+                <Button size="sm" variant="secondary" onClick={() => void resolve(item.id, "allow_always")}>Always allow</Button>
                 <Button size="sm" variant="danger" onClick={() => void resolve(item.id, "reject")}>Reject</Button>
               </div>
             </div>

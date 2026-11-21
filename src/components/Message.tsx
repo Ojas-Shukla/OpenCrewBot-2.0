@@ -44,10 +44,10 @@ function ToolIcon({ name }: { name: string }) {
 function ApprovalButtons({ message, part }: { message: ChatMessage; part: ToolPart }) {
   const { toast } = useApp();
   const [busy, setBusy] = useState(false);
-  const decide = async (approve: boolean) => {
+  const decide = async (approve: boolean, always = false) => {
     setBusy(true);
     try {
-      await api.approve(message.conversationId, message.botId!, part.toolCallId, approve);
+      await api.approve(message.conversationId, message.botId!, part.toolCallId, approve, always);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't send that.");
       setBusy(false);
@@ -61,8 +61,11 @@ function ApprovalButtons({ message, part }: { message: ChatMessage; part: ToolPa
       <Button size="sm" variant="secondary" disabled={busy} onClick={() => decide(false)}>
         Deny
       </Button>
-      <Button size="sm" variant="primary" disabled={busy} onClick={() => decide(true)}>
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => decide(true, false)}>
         Allow once
+      </Button>
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => decide(true, true)}>
+        Always allow
       </Button>
     </div>
   );

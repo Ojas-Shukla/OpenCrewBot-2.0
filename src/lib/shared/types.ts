@@ -252,8 +252,9 @@ export interface ApprovalRequest {
   preview: string;
   status: ApprovalStatus;
   createdAt: string;
+  expiresAt?: string;
   resolvedAt?: string;
-  resolution?: "allow_once" | "reject";
+  resolution?: "allow_once" | "allow_always" | "reject";
   toolCallId?: string;
 }
 

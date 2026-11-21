@@ -93,6 +93,9 @@ export function createMockModel(botName: string) {
       }
       const url = said.match(/\bopen (https?:\/\/\S+)/i);
       if (url && tools.has("browser_goto")) return toolCall("browser_goto", { url: url[1] });
+      const loadSkill = said.match(/(?:load|use|activate)\s+skill\s+["']?([^"'\n]+)["']?/i);
+      if (loadSkill && tools.has("skill_load")) return toolCall("skill_load", { skill: loadSkill[1].trim() });
+      if (/\b(?:list skills|available skills)\b/i.test(said) && tools.has("skill_list")) return toolCall("skill_list", {});
       const search = said.match(/(?:search|look up|find)\s+(?:for\s+)?(.+)/i);
       if (search && tools.has("web_search")) return toolCall("web_search", { query: search[1], maxResults: 3 });
 

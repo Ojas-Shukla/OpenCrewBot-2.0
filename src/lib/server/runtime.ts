@@ -10,7 +10,7 @@ import { Memory } from "@mastra/memory";
 import { randomUUID } from "node:crypto";
 import type { Bot, ChatMessage, ConversationId, Part, RouteNote } from "@/lib/shared/types";
 import { MASTRA_DB_URL, OWNER_ID, isMock } from "./config";
-import { conversationGeneration, getBot, listApprovalRequests, listSkills, saveApprovalRequest, saveMessage, writeAuditEvent } from "./db";
+import { conversationGeneration, getApprovalRequest, getBot, listApprovalRequests, listSkills, saveApprovalRequest, saveBot, saveMessage, writeAuditEvent } from "./db";
 import { createApprovalRequest } from "./approvals";
 import { mayAutoApprove } from "./execution-policy";
 import { publish } from "./bus";
@@ -320,8 +320,19 @@ class TurnFolder {
             const resolvedAt = new Date().toISOString();
             await saveApprovalRequest({ ...approval, status: "approved", resolution: "allow_once", resolvedAt });
             await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: { ...approval, status: "approved", resolution: "allow_once" } });
+            await session.respondToToolApproval({ toolCallId: event.toolCallId, decision: "approve" });
+          } else {
+            const timeoutMs = Number(process.env.APPROVAL_TIMEOUT_MS) || 15 * 60 * 1000;
+            setTimeout(async () => {
+              const current = await getApprovalRequest(approval.id);
+              if (current && current.status === "pending") {
+                const resolvedAt = new Date().toISOString();
+                await saveApprovalRequest({ ...current, status: "expired", resolvedAt });
+                await writeAuditEvent({ id: randomUUID(), type: "approval.expired", createdAt: resolvedAt, data: current });
+                await expireApproval(this.message.conversationId, this.bot.id, event.toolCallId);
+              }
+            }, timeoutMs);
           }
-          if (controlled) await session.respondToToolApproval({ toolCallId: event.toolCallId, decision: "approve" });
         })().catch((error) => console.error("[approval]", error));
         this.emit(true);
         break;
@@ -428,6 +439,34 @@ export function runTurn(request: TurnRequest): Promise<ChatMessage | null> {
 async function executeTurn({ bot, conversationId, content, route }: TurnRequest): Promise<ChatMessage> {
   const stored = await getBot(bot.id);
   const latest = stored ? { ...stored, model: bot.model !== stored.model ? bot.model : stored.model } : bot;
+
+  // Autonomous skill identification: dynamically identify and load relevant skills for this task
+  try {
+    const { identifyRelevantSkills } = await import("./skills");
+    const allSkills = await listSkills();
+    const relevant = identifyRelevantSkills(content, allSkills);
+    if (relevant.length) {
+      const currentSkills = new Set(latest.skillIds ?? []);
+      let changed = false;
+      for (const skill of relevant) {
+        if (!currentSkills.has(skill.id)) {
+          currentSkills.add(skill.id);
+          if (skill.tools.includes("web_search")) latest.tools.webSearch = true;
+          if (skill.tools.includes("code_mode")) latest.tools.codeMode = true;
+          if (skill.tools.includes("memory")) latest.tools.memory = true;
+          if (skill.tools.includes("browser")) latest.tools.browser = true;
+          changed = true;
+        }
+      }
+      if (changed) {
+        latest.skillIds = Array.from(currentSkills);
+        await saveBot(latest);
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+
   const k = key(conversationId, latest.id);
   const folder = new TurnFolder(conversationId, latest, route);
   setRunning(conversationId, latest.id, true);
@@ -454,7 +493,13 @@ async function executeTurn({ bot, conversationId, content, route }: TurnRequest)
   }
 }
 
-export async function respondToApproval(conversationId: ConversationId, botId: string, toolCallId: string, approve: boolean) {
+export async function respondToApproval(
+  conversationId: ConversationId,
+  botId: string,
+  toolCallId: string,
+  approve: boolean,
+  always = false,
+) {
   const session = state.sessions.get(key(conversationId, botId));
   if (!session) throw new Error("That request is no longer waiting. The bot may have restarted.");
   await session.respondToToolApproval({ toolCallId, decision: approve ? "approve" : "decline" });
@@ -462,10 +507,46 @@ export async function respondToApproval(conversationId: ConversationId, botId: s
     request.conversationId === conversationId && request.botId === botId && request.toolCallId === toolCallId && request.status === "pending",
   );
   if (pending) {
+    if (always && approve) {
+      const bot = await getBot(botId);
+      if (bot) {
+        const controlled = new Set(bot.controlledTools ?? []);
+        controlled.add(pending.toolName);
+        bot.controlledTools = Array.from(controlled);
+        if (bot.approval === "ask") {
+          bot.approval = "controlled";
+        }
+        await saveBot(bot);
+        await resetBot(bot.id);
+      }
+    }
     const resolvedAt = new Date().toISOString();
     const status = approve ? "approved" : "rejected";
-    await saveApprovalRequest({ ...pending, status, resolution: approve ? "allow_once" : "reject", resolvedAt });
-    await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: { ...pending, status } });
+    const resolution = approve ? (always ? "allow_always" : "allow_once") : "reject";
+    await saveApprovalRequest({ ...pending, status, resolution, resolvedAt });
+    await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: { ...pending, status, resolution } });
+  }
+}
+
+export async function expireApproval(conversationId: ConversationId, botId: string, toolCallId: string) {
+  const session = state.sessions.get(key(conversationId, botId));
+  if (session) {
+    try {
+      await session.respondToToolApproval({ toolCallId, decision: "decline" });
+    } catch {
+      // ignore
+    }
+  }
+  const folder = state.folders.get(key(conversationId, botId));
+  if (folder) {
+    const part = folder.message.parts.find((p) => p.kind === "tool" && p.toolCallId === toolCallId);
+    if (part && part.kind === "tool") {
+      part.status = "denied";
+      part.detail = "Approval request expired.";
+    }
+    if (!folder.waitingOnPerson()) {
+      await folder.finish("done");
+    }
   }
 }
 

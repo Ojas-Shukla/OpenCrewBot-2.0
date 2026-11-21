@@ -6,13 +6,61 @@ import type { ToolCategory } from "@mastra/core/agent-controller";
 import { createTavilyCrawlTool, createTavilyExtractTool, createTavilySearchTool } from "@mastra/tavily";
 import { QuickJsCodeModeTransport } from "@mastra/quickjs";
 import { z } from "zod";
-import type { Bot, Source } from "@/lib/shared/types";
+import type { Bot, ReusableSkill, Source } from "@/lib/shared/types";
 import { appendMemory, editMemory } from "./memory-files";
 import { publish } from "./bus";
 import { keys } from "./config";
 import { mcpServerNames } from "./connectors";
+import { listSkills } from "./db";
+import { loadSkillForBot } from "./skills";
 
 export const CODE_MODE_TOOL = "execute_typescript";
+
+function skillTools(botId: string): ToolsInput {
+  return {
+    skill_load: createTool({
+      id: "skill_load",
+      description:
+        "Dynamically identify and load a reusable skill (e.g. 'Market Research', 'Competitor Analysis', 'Financial Modelling', 'Presentation Creation', 'Email Drafting', 'Code Review', 'Data Analysis', 'Lead Generation') to gain specialized instructions, output format, and required tools.",
+      inputSchema: z.object({
+        skill: z.string().describe("Name of the skill to load, e.g. 'Competitor Analysis' or 'Financial Modelling'."),
+      }),
+      execute: async ({ skill }) => {
+        try {
+          const { skill: loaded } = await loadSkillForBot(botId, skill);
+          return {
+            loaded: true,
+            name: loaded.name,
+            category: loaded.category,
+            description: loaded.description,
+            instructions: loaded.instructions,
+            outputFormat: loaded.outputFormat,
+            tools: loaded.tools,
+          };
+        } catch (error) {
+          return { loaded: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    }),
+    skill_list: createTool({
+      id: "skill_list",
+      description: "List all available reusable skills in the workforce ecosystem that you can dynamically load.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const skills = await listSkills();
+        return {
+          skills: skills.map((s: ReusableSkill) => ({
+            id: s.id,
+            name: s.name,
+            category: s.category,
+            description: s.description,
+            outputFormat: s.outputFormat,
+          })),
+        };
+      },
+    }),
+  };
+}
 
 function memoryTools(botId: string): ToolsInput {
   return {
@@ -75,6 +123,8 @@ export function buildTools(bot: Bot): BotToolset {
   if (bot.tools.memory) {
     Object.assign(tools, memoryTools(bot.id));
   }
+  Object.assign(tools, skillTools(bot.id));
+  capabilities.push("Dynamically discover and load specialized skills (skill_load, skill_list) from the workforce ecosystem.");
   if (bot.tools.codeMode) {
     // The program runs in a QuickJS (WebAssembly) isolate with no filesystem or
     // network; its only reach is the tools passed here, bridged back to the host.
@@ -103,6 +153,7 @@ export function buildTools(bot: Bot): BotToolset {
 const READ_ONLY_VERB = /^(get|list|search|read|fetch|find|view|show|describe|lookup|query)(_|$)/;
 
 export function toolCategory(toolName: string): ToolCategory | null {
+  if (toolName.startsWith("skill_")) return "read";
   if (["web_search", "read_page", "crawl_site", "ask_user", CODE_MODE_TOOL].includes(toolName)) return "read";
   // Composio: looking up actions is free; running them ("multi execute", the remote workbench) asks.
   if (toolName.startsWith("COMPOSIO_")) {
@@ -161,6 +212,10 @@ export function toolLabel(name: string, args: unknown): { label: string; detail?
     }
     case "crawl_site":
       return { label: "Crawled", detail: host(a.url) };
+    case "skill_load":
+      return { label: "Loaded skill", detail: String(a.skill ?? "") };
+    case "skill_list":
+      return { label: "Listed available skills" };
     case "memory_add":
       return { label: "Saved to memory", detail: String(a.note ?? "") };
     case "memory_edit":

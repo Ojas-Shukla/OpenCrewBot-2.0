@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { nextCronRun, validateCron } from "../src/lib/server/cron.ts";
-import { mayAutoApprove, readyTasks, recoverInterruptedTask, retryWithFallback } from "../src/lib/server/execution-policy.ts";
+import { isChallengeContent, identifyRelevantSkills, mayAutoApprove, readyTasks, recoverInterruptedTask, retryWithFallback } from "../src/lib/server/execution-policy.ts";
 
 test("cron parser computes the next UTC run and rejects invalid expressions", () => {
   const from = new Date("2026-11-21T17:13:30.000Z");
@@ -60,4 +60,46 @@ test("controlled access auto-approves only explicitly configured tools", () => {
   assert.equal(mayAutoApprove("controlled", ["repo_read"], "repo_write"), false);
   assert.equal(mayAutoApprove("ask", ["repo_write"], "repo_write"), false);
   assert.equal(mayAutoApprove("full", [], "repo_write"), true);
+});
+
+test("autonomous skill identification matches relevant skills from task instructions", () => {
+  const dummySkills = [
+    { id: "s1", name: "Financial Modelling", category: "analysis", description: "Build models and projections", instructions: "", outputFormat: "", tools: ["code_mode"], createdAt: "", updatedAt: "" },
+    { id: "s2", name: "Code Review", category: "development", description: "Review pull requests and code defects", instructions: "", outputFormat: "", tools: ["memory"], createdAt: "", updatedAt: "" },
+    { id: "s3", name: "Competitor Analysis", category: "research", description: "Compare competitors and pricing", instructions: "", outputFormat: "", tools: ["web_search"], createdAt: "", updatedAt: "" },
+  ];
+
+  const matchedFin = identifyRelevantSkills("Analyze our cash flow forecast and build a financial model for quarterly revenue", dummySkills);
+  assert.equal(matchedFin.some((s) => s.name === "Financial Modelling"), true);
+
+  const matchedCode = identifyRelevantSkills("Inspect this repository pull request for security vulnerabilities and bugs", dummySkills);
+  assert.equal(matchedCode.some((s) => s.name === "Code Review"), true);
+
+  const matchedComp = identifyRelevantSkills("Research alternative competitors in the market and their pricing tiers", dummySkills);
+  assert.equal(matchedComp.some((s) => s.name === "Competitor Analysis"), true);
+});
+
+test("challenge content detection flags contradictions, disputes, and material defects", () => {
+  assert.equal(isChallengeContent("I challenge this pricing conclusion because official rates are 20% lower."), true);
+  assert.equal(isChallengeContent("There is a clear contradiction between the market size estimate and the cited report."), true);
+  assert.equal(isChallengeContent("I dispute the claim that this endpoint is deprecated."), true);
+  assert.equal(isChallengeContent("The research looks accurate, verified against the official documentation."), false);
+});
+
+test("approval expiration and allow_always workflow maintain safe autonomy", () => {
+  const now = Date.now();
+  const past = new Date(now - 60000).toISOString();
+  const future = new Date(now + 60000).toISOString();
+
+  const isExpired = (item) => item.status === "pending" && item.expiresAt && Date.parse(item.expiresAt) <= now;
+  assert.equal(isExpired({ status: "pending", expiresAt: past }), true);
+  assert.equal(isExpired({ status: "pending", expiresAt: future }), false);
+  assert.equal(isExpired({ status: "approved", expiresAt: past }), false);
+
+  // When a user selects allow_always, the tool enters controlledTools and succeeds in controlled mode
+  const botControlled = ["git_diff"];
+  assert.equal(mayAutoApprove("controlled", botControlled, "git_diff"), true);
+  assert.equal(mayAutoApprove("controlled", botControlled, "git_push"), false);
+  botControlled.push("git_push");
+  assert.equal(mayAutoApprove("controlled", botControlled, "git_push"), true);
 });

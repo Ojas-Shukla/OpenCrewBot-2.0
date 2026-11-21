@@ -6,6 +6,9 @@ import { listBots, listMessages, listCollaborationRecords, saveCollaborationReco
 import { pickResponders } from "./jev";
 import { runTurn, stopEpochOf } from "./runtime";
 import { readSharedMemory } from "./memory-files";
+import { isChallengeContent } from "./execution-policy";
+
+export { isChallengeContent };
 
 /** How many bot-to-bot @mention hops one message from the person can start. */
 const MAX_HANDOFF_DEPTH = 2;
@@ -51,6 +54,7 @@ function authorName(message: ChatMessage, bots: Map<string, Bot>): string {
   if (message.role === "user") return "Person";
   return bots.get(message.botId ?? "")?.name ?? "A former member";
 }
+
 
 /** Everything in the room since this bot last spoke (at most the last 30 lines). */
 function catchUp(history: ChatMessage[], bot: Bot, bots: Map<string, Bot>): string[] {
@@ -132,7 +136,10 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
       route: note,
     });
     if (reply && reply.status === "done") {
-      await recordCollaboration(room, bot.id, "intermediate", messageText(reply));
+      const text = messageText(reply);
+      const isChallenge = isChallengeContent(text);
+      const mentioned = mentionsIn(text, members).find((b) => b.id !== bot.id);
+      await recordCollaboration(room, bot.id, isChallenge ? "challenge" : "intermediate", text, mentioned?.id);
     }
     return { bot, reply };
   }));
@@ -165,7 +172,14 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
       ].join("\n\n"),
       route: { by: "handoff" },
     });
-    if (review && review.status === "done") await recordCollaboration(room, reviewer.id, "verification", messageText(review));
+    if (review && review.status === "done") {
+      const text = messageText(review);
+      const isChallenge = isChallengeContent(text);
+      const challenged = members.find(
+        (b) => b.id !== reviewer.id && (text.toLowerCase().includes(b.name.toLowerCase()) || text.toLowerCase().includes(`@${b.handle.toLowerCase()}`)),
+      );
+      await recordCollaboration(room, reviewer.id, isChallenge ? "challenge" : "verification", text, challenged?.id);
+    }
   }
   while (queue.length && stopEpochOf(conversationId) === epoch) {
     const { bot, route: note, depth } = queue.shift()!;
@@ -177,7 +191,10 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
       route: note,
     });
     if (!reply || reply.status !== "done" || depth >= MAX_HANDOFF_DEPTH) continue;
-    await recordCollaboration(room, bot.id, "intermediate", messageText(reply));
+    const text = messageText(reply);
+    const isChallenge = isChallengeContent(text);
+    const mentioned = mentionsIn(text, members).find((b) => b.id !== bot.id);
+    await recordCollaboration(room, bot.id, isChallenge ? "challenge" : "intermediate", text, mentioned?.id);
     for (const next of mentionsIn(messageText(reply), members)) {
       if (next.id === bot.id || queue.some((q) => q.bot.id === next.id)) continue;
       queue.push({ bot: next, route: { by: "handoff" }, depth: depth + 1 });

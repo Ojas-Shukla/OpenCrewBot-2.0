@@ -120,32 +120,48 @@ export function workflowRuns(workflowId?: string) {
 
 const g = globalThis as unknown as { __opencrewbotScheduler?: { started: boolean } };
 
+export async function tickScheduledWorkflows(): Promise<{
+  checked: number;
+  triggered: string[];
+  errors: string[];
+}> {
+  const now = Date.now();
+  const triggered: string[] = [];
+  const errors: string[] = [];
+  const schedules = await listScheduledWorkflows();
+  let checked = 0;
+
+  for (const schedule of schedules) {
+    if (schedule.status !== "active" || !schedule.nextRunAt || Date.parse(schedule.nextRunAt) > now) continue;
+    checked++;
+    try {
+      const nowIso = new Date(now).toISOString();
+      const leaseUntil = new Date(now + 2 * 60 * 1000).toISOString();
+      if (!(await claimWorkflowSchedule(schedule.id, nowIso, leaseUntil))) continue;
+      const execution = await runScheduledWorkflow(schedule.id);
+      triggered.push(`${schedule.name} (${schedule.id}) -> ${execution.id}`);
+      const refreshed = (await listScheduledWorkflows()).find((item) => item.id === schedule.id);
+      if (!refreshed || refreshed.status !== "active") continue;
+      await saveScheduledWorkflow({
+        ...refreshed,
+        nextRunAt: nextCronRun(schedule.cron, new Date(now)).toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      errors.push(`${schedule.name} (${schedule.id}): ${msg}`);
+      await saveScheduledWorkflow({ ...schedule, status: "paused", updatedAt: new Date().toISOString() });
+      console.error("[workflow-scheduler]", error);
+    }
+  }
+
+  return { checked, triggered, errors };
+}
+
 export function startWorkflowScheduler(): void {
-  const state = g.__opencrewbotScheduler ??= { started: false };
+  const state = (g.__opencrewbotScheduler ??= { started: false });
   if (state.started) return;
   state.started = true;
-  const tick = async () => {
-    const now = Date.now();
-    for (const schedule of await listScheduledWorkflows()) {
-      if (schedule.status !== "active" || !schedule.nextRunAt || Date.parse(schedule.nextRunAt) > now) continue;
-      try {
-        const nowIso = new Date(now).toISOString();
-        const leaseUntil = new Date(now + 2 * 60 * 1000).toISOString();
-        if (!(await claimWorkflowSchedule(schedule.id, nowIso, leaseUntil))) continue;
-        await runScheduledWorkflow(schedule.id);
-        const refreshed = (await listScheduledWorkflows()).find((item) => item.id === schedule.id);
-        if (!refreshed || refreshed.status !== "active") continue;
-        await saveScheduledWorkflow({
-          ...refreshed,
-          nextRunAt: nextCronRun(schedule.cron).toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (error) {
-        await saveScheduledWorkflow({ ...schedule, status: "paused", updatedAt: new Date().toISOString() });
-        console.error("[workflow-scheduler]", error);
-      }
-    }
-  };
-  void tick();
-  setInterval(() => void tick(), 30 * 1000);
+  void tickScheduledWorkflows().catch((e) => console.error("[workflow-scheduler]", e));
+  setInterval(() => void tickScheduledWorkflows().catch((e) => console.error("[workflow-scheduler]", e)), 30 * 1000);
 }
