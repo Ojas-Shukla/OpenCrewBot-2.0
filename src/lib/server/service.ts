@@ -46,57 +46,74 @@ async function sweepInterrupted() {
 const SEED_MARKER = join(DATA_DIR, ".seeded");
 
 async function seed() {
-  if (existsSync(SEED_MARKER)) return;
+  const hasSeedMarker = existsSync(SEED_MARKER);
   const tools = { webSearch: true, memory: true, codeMode: false, browser: false, askUser: true };
-  const scout = await createBot({
-    name: "Scout",
-    title: "Research",
-    description: "Finds things out on the web and comes back with sourced answers.",
-    instructions:
-      "Research before answering anything time-sensitive. Search, read the best two or three sources, then answer with the URLs you used. Say plainly when sources disagree or you couldn't verify something.",
-    emoji: "🔭",
-    color: "#2f7df6",
-    model: DEFAULT_MODEL,
-    tools: { ...tools, codeMode: true },
-    approval: "ask",
-    pinned: true,
-  });
-  const quill = await createBot({
-    name: "Quill",
-    title: "Writing",
-    description: "Turns notes and research into clear posts, docs and emails.",
-    instructions:
-      "Write in plain, specific language. Match the person's voice once you know it, and keep their style preferences in memory. Offer one tight draft, not three options.",
-    emoji: "✒️",
-    color: "#e0663d",
-    model: DEFAULT_MODEL,
-    tools: { ...tools, webSearch: false },
-    approval: "ask",
-    pinned: false,
-  });
-  const atlas = await createBot({
-    name: "Atlas",
-    title: "Planning",
-    description: "Breaks goals into steps, keeps track of decisions, and pulls in teammates.",
-    instructions:
-      "Turn vague goals into a short, ordered plan with owners. Keep decisions and open questions in memory. In rooms, hand research to @scout and drafting to @quill.",
-    emoji: "🧭",
-    color: "#1f9d6b",
-    model: DEFAULT_MODEL,
-    tools,
-    approval: "ask",
-    pinned: false,
-  });
-  await createRoom({
-    name: "Studio",
-    topic: "Content and launches",
-    emoji: "🎬",
-    memberIds: [atlas.id, scout.id, quill.id],
-    leadId: atlas.id,
-    responder: "auto",
-    pinned: true,
-  });
-  writeFileSync(SEED_MARKER, new Date().toISOString());
+  let existing = await store.listBots();
+  let scout = existing.find((bot) => bot.name === "Scout");
+  let quill = existing.find((bot) => bot.name === "Quill");
+  let atlas = existing.find((bot) => bot.name === "Atlas");
+  if (!hasSeedMarker) {
+    scout = await createBot({
+      name: "Scout", title: "Research", description: "Finds things out on the web and comes back with sourced answers.",
+      instructions: "Research before answering anything time-sensitive. Search, read the best two or three sources, then answer with the URLs you used. Say plainly when sources disagree or you couldn't verify something.",
+      emoji: "🔭", color: "#2f7df6", model: DEFAULT_MODEL, tools: { ...tools, codeMode: true }, approval: "ask", pinned: true,
+    });
+    quill = await createBot({
+      name: "Quill", title: "Writing", description: "Turns notes and research into clear posts, docs and emails.",
+      instructions: "Write in plain, specific language. Match the person's voice once you know it, and keep their style preferences in memory. Offer one tight draft, not three options.",
+      emoji: "✒️", color: "#e0663d", model: DEFAULT_MODEL, tools: { ...tools, webSearch: false }, approval: "ask", pinned: false,
+    });
+    atlas = await createBot({
+      name: "Atlas", title: "Planning", description: "Breaks goals into steps, keeps track of decisions, and pulls in teammates.",
+      instructions: "Turn vague goals into a short, ordered plan with owners. Keep decisions and open questions in memory. In rooms, hand research to @scout and drafting to @quill.",
+      emoji: "🧭", color: "#1f9d6b", model: DEFAULT_MODEL, tools, approval: "ask", pinned: false,
+    });
+  }
+
+  existing = await store.listBots();
+  scout ??= existing.find((bot) => bot.title === "Research");
+  quill ??= existing.find((bot) => bot.title === "Writing");
+  atlas ??= existing.find((bot) => bot.title === "Planning");
+  const defaults = [
+    { name: "Nova", title: "Data Analysis", description: "Analyses datasets and calculates business insights.", instructions: "State assumptions, show calculations and distinguish correlation from causation.", emoji: "📊", color: "#8b5cf6", tools: { ...tools, codeMode: true } },
+    { name: "Forge", title: "Development", description: "Reviews repositories and proposes implementation plans.", instructions: "Inspect evidence, identify high-confidence defects and produce prioritized, surgical fixes.", emoji: "🛠️", color: "#14b8a6", tools: { ...tools, codeMode: true } },
+    { name: "Pulse", title: "Marketing", description: "Creates audience-led campaigns and content plans.", instructions: "Ground campaign ideas in audience concerns, positioning and measurable calls to action.", emoji: "📣", color: "#ec4899", tools: { ...tools, webSearch: false } },
+    { name: "Ledger", title: "Financial Analysis", description: "Builds assumptions and evaluates financial scenarios.", instructions: "Show calculations, state uncertainty and recommend decisions with explicit risks.", emoji: "📈", color: "#eab308", tools: { ...tools, codeMode: true } },
+    { name: "Sage", title: "Sales Operations", description: "Qualifies leads and improves sales processes.", instructions: "Segment evidence, identify conversion bottlenecks and recommend measurable next actions.", emoji: "🎯", color: "#ef4444", tools: { ...tools, webSearch: true } },
+  ];
+  for (const definition of defaults) {
+    if (!existing.some((bot) => bot.name === definition.name)) {
+      await createBot({
+        ...definition,
+        model: DEFAULT_MODEL,
+        approval: "ask",
+        pinned: false,
+      });
+    }
+  }
+
+  existing = await store.listBots();
+  const findByTitle = (title: string) => existing.find((bot) => bot.title === title);
+  if (!hasSeedMarker) {
+    await createRoom({ name: "Studio", topic: "Content and launches", emoji: "🎬", memberIds: [atlas?.id, scout?.id, quill?.id].filter((id): id is string => Boolean(id)), leadId: atlas?.id ?? null, responder: "auto", pinned: true });
+  }
+  const rooms = await store.listRooms();
+  const nova = findByTitle("Data Analysis");
+  const forge = findByTitle("Development");
+  const pulse = findByTitle("Marketing");
+  const ledger = findByTitle("Financial Analysis");
+  const sage = findByTitle("Sales Operations");
+  const roomDefaults = [
+    { name: "Research Desk", topic: "Evidence and competitive intelligence", emoji: "🔎", memberIds: [scout?.id, nova?.id, atlas?.id].filter((id): id is string => Boolean(id)), leadId: scout?.id ?? null },
+    { name: "Delivery Room", topic: "Technical planning and implementation", emoji: "⚙️", memberIds: [atlas?.id, forge?.id, ledger?.id].filter((id): id is string => Boolean(id)), leadId: forge?.id ?? null },
+    { name: "Growth Room", topic: "Marketing, sales and revenue", emoji: "🚀", memberIds: [pulse?.id, sage?.id, ledger?.id, quill?.id].filter((id): id is string => Boolean(id)), leadId: pulse?.id ?? null },
+  ];
+  for (const definition of roomDefaults) {
+    if (!rooms.some((room) => room.name === definition.name)) {
+      await createRoom({ ...definition, responder: "everyone", pinned: false });
+    }
+  }
+  if (!hasSeedMarker) writeFileSync(SEED_MARKER, new Date().toISOString());
 }
 
 // ── bots ────────────────────────────────────────────────────────────────

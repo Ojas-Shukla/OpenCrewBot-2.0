@@ -52,6 +52,30 @@ export function deleteWorkspace(botId: string): void {
   rmSync(workspaceDir(botId), { recursive: true, force: true });
 }
 
+function sharedWorkspaceDir(scope: "room" | "project" | "user", ownerId: string): string {
+  const dir = join(WORKSPACES_DIR, "shared", scope, ownerId.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function sharedMemoryPath(scope: "room" | "project" | "user", ownerId: string): string {
+  return join(sharedWorkspaceDir(scope, ownerId), "MEMORY.md");
+}
+
+export function readSharedMemory(scope: "room" | "project" | "user", ownerId: string): string {
+  const path = sharedMemoryPath(scope, ownerId);
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+export function writeSharedMemory(scope: "room" | "project" | "user", ownerId: string, content: string): string {
+  const path = sharedMemoryPath(scope, ownerId);
+  const clean = redactSecrets(content);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, clean, { mode: 0o600 });
+  renameSync(tmp, path);
+  return clean;
+}
+
 /** The slice of MEMORY.md that loads into the prompt, and whether it was cut. */
 export function memoryForPrompt(botId: string): { text: string; truncated: boolean } {
   const full = readMemory(botId);

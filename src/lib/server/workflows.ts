@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { ExecutionTaskInput, ScheduledWorkflow, WorkflowTemplate } from "@/lib/shared/types";
 import { InputError } from "./errors";
 import { getBot, getWorkflowTemplate, listScheduledWorkflows, listWorkflowTemplates, saveScheduledWorkflow, saveWorkflowTemplate } from "./db";
+import { createExecution, executeExecution } from "./execution";
+import { listWorkflowRuns, saveWorkflowRun } from "./db";
 
 function validateTaskTemplates(tasks: ExecutionTaskInput[]) {
   if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 30) throw new InputError("A workflow needs between 1 and 30 task templates.");
@@ -64,4 +66,26 @@ export async function setScheduledWorkflowStatus(id: string, status: "active" | 
 
 export function scheduledWorkflows() {
   return listScheduledWorkflows();
+}
+
+export async function runScheduledWorkflow(id: string): Promise<ExecutionRun> {
+  const schedule = (await listScheduledWorkflows()).find((item) => item.id === id);
+  if (!schedule) throw new InputError("Scheduled workflow not found.");
+  if (schedule.status !== "active") throw new InputError("The scheduled workflow is paused.");
+  const workflow = await getWorkflowTemplate(schedule.workflowId);
+  if (!workflow) throw new InputError("Workflow template not found.");
+  const execution = await createExecution({
+    name: `${schedule.name}: ${workflow.name}`,
+    instruction: workflow.instruction,
+    tasks: workflow.taskTemplates,
+  });
+  await saveWorkflowRun({ ...execution, workflowId: workflow.id });
+  void executeExecution(execution.id).catch((error) => console.error("[scheduled-workflow]", error));
+  const now = new Date().toISOString();
+  await saveScheduledWorkflow({ ...schedule, lastRunAt: now, lastRunStatus: "running", updatedAt: now });
+  return execution;
+}
+
+export function workflowRuns(workflowId?: string) {
+  return listWorkflowRuns(workflowId);
 }

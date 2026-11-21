@@ -30,6 +30,7 @@ export interface Bot {
   /** Connection ids this bot may use: `composio:<toolkit>` or `mcp:<serverId>`. */
   connections: string[];
   approval: ApprovalMode;
+  controlledTools?: string[];
   pinned: boolean;
   createdAt: string;
 }

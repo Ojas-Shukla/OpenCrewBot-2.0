@@ -1,8 +1,8 @@
 import { body, handle } from "@/lib/server/http";
-import { createScheduledWorkflow, scheduledWorkflows } from "@/lib/server/workflows";
+import { createScheduledWorkflow, scheduledWorkflows, workflowRuns } from "@/lib/server/workflows";
 
 export async function GET() {
-  return handle(async () => ({ schedules: await scheduledWorkflows() }));
+  return handle(async () => ({ schedules: await scheduledWorkflows(), runs: await workflowRuns() }));
 }
 
 export async function POST(request: Request) {

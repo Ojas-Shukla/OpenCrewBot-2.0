@@ -4,6 +4,7 @@ import type { Bot, ChatMessage, Room, RouteNote } from "@/lib/shared/types";
 import { listBots, listMessages } from "./db";
 import { pickResponders } from "./jev";
 import { runTurn, stopEpochOf } from "./runtime";
+import { readSharedMemory } from "./memory-files";
 
 /** How many bot-to-bot @mention hops one message from the person can start. */
 const MAX_HANDOFF_DEPTH = 2;
@@ -50,9 +51,11 @@ function roomPrompt(room: Room, bot: Bot, members: Bot[], lines: string[], hando
   const roster = members
     .map((b) => `- ${b.name} (@${b.handle})${b.title ? `, ${b.title}` : ""}${b.id === bot.id ? " (you)" : ""}`)
     .join("\n");
+  const sharedMemory = readSharedMemory("room", room.id).trim();
   return [
     `[Group room "${room.name}"${room.topic ? `, topic: ${room.topic}` : ""}]`,
     `Members:\n${roster}`,
+    sharedMemory ? `Shared room memory:\n${sharedMemory.slice(0, 16 * 1024)}` : "",
     `New in the room since your last message:\n${lines.join("\n") || "(nothing new)"}`,
     "---",
     handoff
@@ -82,7 +85,7 @@ async function decideResponders(room: Room, members: Bot[], text: string, histor
   return { bots: lead ? [lead] : [], route: { by: "lead" } as RouteNote };
 }
 
-/** Handle the person's new room message: route it, then run each responder in turn. */
+/** Handle the person's new room message: route responders in parallel, then allow bounded hand-offs. */
 export async function runRoom(room: Room, userMessage: ChatMessage): Promise<void> {
   const allBots = await listBots();
   const bots = new Map(allBots.map((b) => [b.id, b]));
@@ -94,7 +97,28 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
   const history = await listMessages(conversationId, 60);
   const { bots: responders, route } = await decideResponders(room, members, messageText(userMessage), history, bots);
 
-  const queue: Array<{ bot: Bot; route: RouteNote; depth: number }> = responders.map((bot) => ({ bot, route, depth: 0 }));
+  const initial = responders.map((bot) => ({ bot, route, depth: 0 }));
+  await Promise.all(initial.map(async ({ bot, route: note, depth }) => {
+    const transcript = await listMessages(conversationId, 60);
+    await runTurn({
+      bot,
+      conversationId,
+      content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff"),
+      route: note,
+    });
+  }));
+
+  const queue: Array<{ bot: Bot; route: RouteNote; depth: number }> = [];
+  const transcriptAfterParallel = await listMessages(conversationId, 60);
+  for (const { bot } of initial) {
+    const ownReplies = transcriptAfterParallel.filter((message) => message.botId === bot.id && message.role === "bot");
+    const latest = ownReplies.at(-1);
+    if (!latest) continue;
+    for (const next of mentionsIn(messageText(latest), members)) {
+      if (next.id === bot.id || queue.some((item) => item.bot.id === next.id)) continue;
+      queue.push({ bot: next, route: { by: "handoff" }, depth: 1 });
+    }
+  }
   while (queue.length && stopEpochOf(conversationId) === epoch) {
     const { bot, route: note, depth } = queue.shift()!;
     const transcript = await listMessages(conversationId, 60);

@@ -377,6 +377,15 @@ export async function saveWorkflowRun(run: ExecutionRun & { workflowId: string }
   });
 }
 
+export async function listWorkflowRuns(workflowId?: string, limit = 100): Promise<Array<ExecutionRun & { workflowId: string }>> {
+  const sql = workflowId
+    ? "SELECT data FROM workflow_runs WHERE workflow_id = ? ORDER BY created_at DESC LIMIT ?"
+    : "SELECT data FROM workflow_runs ORDER BY created_at DESC LIMIT ?";
+  const args = workflowId ? [workflowId, limit] : [limit];
+  const rows = await (await db()).execute({ sql, args });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ExecutionRun & { workflowId: string });
+}
+
 // ── reusable skills ────────────────────────────────────────────────────
 
 export async function saveSkill(skill: ReusableSkill): Promise<void> {
