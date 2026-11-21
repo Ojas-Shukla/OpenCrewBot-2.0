@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { MoreHorizontal, PanelLeft, Pin, Plug, Plus, Search, Settings, X } from "lucide-react";
+import { LayoutDashboard, MoreHorizontal, PanelLeft, Pin, Plug, Plus, Search, Settings, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
 import { timeLabel } from "@/lib/client/format";
@@ -192,6 +192,9 @@ function SidebarFooter() {
       </a>
       <IconButton label="Connections" onClick={() => setPanel({ kind: "connections" })} className="ml-auto">
         <Plug size={18} />
+      </IconButton>
+      <IconButton label="Workforce operations" onClick={() => setPanel({ kind: "operations" })}>
+        <LayoutDashboard size={18} />
       </IconButton>
       <IconButton label={settingsHint} onClick={() => setPanel({ kind: "settings" })} className="relative">
         <Settings size={18} />

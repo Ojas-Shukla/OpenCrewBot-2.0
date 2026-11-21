@@ -40,6 +40,7 @@ export async function POST(request: Request) {
       model: input.model || DEFAULT_MODEL,
       tools,
       approval,
+      controlledTools: approval === "controlled" ? ["web_search", "read_page", "crawl_site", "memory"] : [],
       pinned: false,
     });
     return { bot };

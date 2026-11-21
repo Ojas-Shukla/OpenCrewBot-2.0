@@ -11,6 +11,12 @@ import type {
   ModelOption,
   Room,
   RoomInput,
+  ExecutionRun,
+  ExecutionTask,
+  ReusableSkill,
+  ApprovalRequest,
+  WorkflowTemplate,
+  ScheduledWorkflow,
 } from "@/lib/shared/types";
 
 async function call<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
@@ -65,4 +71,28 @@ export const api = {
     call<{ server: McpServer }>("/api/connections/mcp", { method: "POST", json: input }),
   removeMcpServer: (id: string) => call(`/api/connections/mcp/${id}`, { method: "DELETE" }),
   testMcpServer: (id: string) => call<{ tools: number }>(`/api/connections/mcp/${id}/test`, { method: "POST" }),
+  executions: () => call<{ executions: Array<{ run: ExecutionRun; tasks: ExecutionTask[] }> }>("/api/executions"),
+  createExecution: (input: { name: string; instruction: string; tasks: Array<{ key: string; title: string; description: string; assignedBotId: string; dependencies?: string[]; maxAttempts?: number; timeoutMs?: number }> }) =>
+    call<{ execution: ExecutionRun }>("/api/executions", { method: "POST", json: input }),
+  runExecution: (id: string) => call<{ ok: boolean }>(`/api/executions/${id}/run`, { method: "POST" }),
+  cancelExecution: (id: string) => call<{ execution: ExecutionRun }>(`/api/executions/${id}/cancel`, { method: "POST" }),
+  chiefOfStaff: (instruction: string, execute = false) =>
+    call<{ execution: ExecutionRun; tasks: ExecutionTask[] }>("/api/chief-of-staff", { method: "POST", json: { instruction, execute } }),
+  factory: (instruction: string, name?: string, model?: string) =>
+    call<{ bot: Bot }>("/api/bots/factory", { method: "POST", json: { instruction, name, model } }),
+  skills: () => call<{ skills: ReusableSkill[] }>("/api/skills"),
+  approvals: () => call<{ approvals: ApprovalRequest[] }>("/api/approvals"),
+  resolveApproval: (id: string, resolution: "allow_once" | "reject") =>
+    call<{ approval: ApprovalRequest }>(`/api/approvals/${id}`, { method: "POST", json: { resolution } }),
+  workflows: () => call<{ workflows: WorkflowTemplate[] }>("/api/workflows"),
+  createWorkflow: (input: { name: string; description: string; instruction: string; taskTemplates: Array<{ key: string; title: string; description: string; assignedBotId: string; dependencies?: string[] }> }) =>
+    call<{ workflow: WorkflowTemplate }>("/api/workflows", { method: "POST", json: input }),
+  schedules: () => call<{ schedules: ScheduledWorkflow[]; runs: ExecutionRun[] }>("/api/workflows/scheduled"),
+  setScheduleStatus: (id: string, status: "active" | "paused") =>
+    call<{ schedule: ScheduledWorkflow }>(`/api/workflows/scheduled/${id}`, { method: "PATCH", json: { status } }),
+  runSchedule: (id: string) => call<{ execution: ExecutionRun }>(`/api/workflows/scheduled/${id}`, { method: "POST" }),
+  sharedMemory: (scope: "room" | "project" | "user", ownerId: string) =>
+    call<{ content: string }>(`/api/shared-memory/${scope}/${encodeURIComponent(ownerId)}`),
+  saveSharedMemory: (scope: "room" | "project" | "user", ownerId: string, content: string, reason?: string) =>
+    call<{ content: string }>(`/api/shared-memory/${scope}/${encodeURIComponent(ownerId)}`, { method: "PUT", json: { content, reason } }),
 };

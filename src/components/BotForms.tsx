@@ -22,6 +22,7 @@ function blankBot(defaultModel: string): BotInput {
     model: defaultModel,
     tools: { webSearch: true, memory: true, codeMode: false, browser: false, askUser: true },
     approval: "ask",
+    controlledTools: [],
     pinned: false,
   };
 }
