@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExecutionRun, ExecutionTask, ExecutionTaskInput } from "@/lib/shared/types";
 import { getBot, getExecutionRun, listExecutionRuns, listExecutionTasks, saveExecutionRun, saveExecutionTask, writeAuditEvent } from "./db";
 import { InputError } from "./errors";
-import { runTurn } from "./runtime";
+import { runTurn, stopConversation } from "./runtime";
 
 const activeRuns = new Set<string>();
 
@@ -56,6 +56,9 @@ export async function createExecution(input: { name: string; instruction: string
     if (task.maxAttempts !== undefined && (!Number.isInteger(task.maxAttempts) || task.maxAttempts < 1 || task.maxAttempts > 5)) {
       throw new InputError("maxAttempts must be an integer from 1 to 5.");
     }
+    if (task.timeoutMs !== undefined && (!Number.isInteger(task.timeoutMs) || task.timeoutMs < 1000 || task.timeoutMs > 900000)) {
+      throw new InputError("timeoutMs must be an integer from 1,000 to 900,000.");
+    }
   }
 
   const runId = randomUUID();
@@ -69,6 +72,7 @@ export async function createExecution(input: { name: string; instruction: string
     status: "pending",
     attempts: 0,
     maxAttempts: task.maxAttempts ?? 2,
+    timeoutMs: task.timeoutMs,
     createdAt,
   }));
   const run: ExecutionRun = { id: runId, name, instruction, status: "planned", taskIds: tasks.map((task) => task.id), createdAt };
@@ -87,6 +91,27 @@ export async function getExecution(id: string) {
 export async function executionHistory() {
   const runs = await listExecutionRuns();
   return Promise.all(runs.map(async (run) => ({ run, tasks: await listExecutionTasks(run.id) })));
+}
+
+export async function cancelExecution(id: string): Promise<ExecutionRun> {
+  const run = await getExecutionRun(id);
+  if (!run) throw new InputError("Execution not found.");
+  if (run.status === "completed" || run.status === "cancelled") return run;
+  const tasks = await listExecutionTasks(id);
+  for (const task of tasks) {
+    if (task.status !== "completed") {
+      task.status = "cancelled";
+      task.error = "Cancelled by the user.";
+      task.completedAt = new Date().toISOString();
+      await saveExecutionTask(task);
+    }
+  }
+  await stopConversation(`execution:${id}`);
+  run.status = "cancelled";
+  run.completedAt = new Date().toISOString();
+  await saveExecutionRun(run);
+  await audit("execution.cancelled", { runId: id });
+  return run;
 }
 
 function outputOf(message: Awaited<ReturnType<typeof runTurn>>): string {
@@ -135,6 +160,7 @@ export async function executeExecution(id: string): Promise<void> {
 
     let tasks = await listExecutionTasks(id);
     while (tasks.some((task) => task.status === "pending" || task.status === "running")) {
+      if ((await getExecutionRun(id))?.status === "cancelled") break;
       const completed = new Set(tasks.filter((task) => task.status === "completed").map((task) => task.id));
       let changed = false;
 
@@ -183,7 +209,20 @@ export async function executeExecution(id: string): Promise<void> {
           let succeeded = false;
           while (task.attempts < task.maxAttempts && !succeeded) {
             task.attempts += 1;
-            const message = await runTurn({ bot, conversationId: `execution:${id}`, content: prompt });
+            let message: Awaited<ReturnType<typeof runTurn>> | null = null;
+            const conversationId = `execution:${id}`;
+            const turn = runTurn({ bot, conversationId, content: prompt });
+            if (task.timeoutMs) {
+              const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), task.timeoutMs));
+              message = await Promise.race([turn, timeout]);
+              if (!message) {
+                await stopConversation(conversationId);
+                task.error = `Task timed out after ${task.timeoutMs} milliseconds.`;
+                continue;
+              }
+            } else {
+              message = await turn;
+            }
             const output = outputOf(message);
             if (message?.status === "done" && output) {
               task.output = output;

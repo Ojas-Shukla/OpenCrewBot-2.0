@@ -193,6 +193,7 @@ export interface ExecutionTask {
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
+  timeoutMs?: number;
 }
 
 export interface ExecutionRun {
@@ -215,6 +216,7 @@ export interface ExecutionTaskInput {
   assignedBotId: string;
   dependencies?: string[];
   maxAttempts?: number;
+  timeoutMs?: number;
 }
 
 export type MemoryScope = "individual" | "room" | "project" | "user";
