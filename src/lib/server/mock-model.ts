@@ -99,6 +99,26 @@ export function createMockModel(botName: string) {
       const search = said.match(/(?:search|look up|find)\s+(?:for\s+)?(.+)/i);
       if (search && tools.has("web_search")) return toolCall("web_search", { query: search[1], maxResults: 3 });
 
+      if (said.includes("EXPLICIT REVIEW STEP") || prompt.some((p) => typeof p.content === "string" && p.content.includes("EXPLICIT REVIEW STEP"))) {
+        const reviewText =
+          "```json\n" +
+          JSON.stringify(
+            {
+              verdict: "challenge",
+              targetBotHandle: "scout",
+              claimsAudited: ["Pricing is $49/month", "Market share is 45%"],
+              evidenceAssessment: "Primary source citations show rates were updated to $79/mo and market share figures lack filing evidence.",
+              materialDefects: ["Pricing discrepancy: cited $49/mo vs documented $79/mo", "Market share estimate is unverified"],
+              recommendations: "Reconcile pricing tier with live product documentation.",
+              confidence: 0.95,
+            },
+            null,
+            2,
+          ) +
+          "\n```\n\nI have completed the evidence audit. There is a pricing discrepancy in the cited findings. Tagging @scout to reconcile.";
+        return { stream: streamOf([...start, ...textParts(reviewText), { type: "finish", finishReason: "stop", usage }]) };
+      }
+
       const reply =
         `Hi, I'm **${botName}**, running on the *mock model* because no \`NEBIUS_API_KEY\` is set yet.\n\n` +
         `You said: "${said.slice(0, 200)}"\n\n` +

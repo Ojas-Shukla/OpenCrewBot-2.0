@@ -53,6 +53,7 @@ export async function loadSkillForBot(botId: string, skillNameOrId: string): Pro
 
   await saveBot(bot);
   const runtime = await import("./runtime");
+  runtime.updateActiveBotRuntime(bot);
   await runtime.resetBot(bot.id);
   publish({ type: "bots-changed" });
 

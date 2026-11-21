@@ -578,6 +578,14 @@ export async function resetBot(botId: string) {
   if (!isBotBusy(botId)) await dropRuntime(botId);
 }
 
+/** Instantly propagate newly activated skills/tools to the active bot runtime so tools take effect in the current active turn. */
+export function updateActiveBotRuntime(bot: Bot): void {
+  const rt = state.runtimes.get(bot.id);
+  if (rt) {
+    rt.holder.bot = bot;
+  }
+}
+
 /** Drop cached sessions so the next turn starts a fresh model-side thread. */
 export function forgetConversation(conversationId: ConversationId) {
   for (const k of [...state.sessions.keys()]) if (k.startsWith(`${conversationId}|`)) state.sessions.delete(k);

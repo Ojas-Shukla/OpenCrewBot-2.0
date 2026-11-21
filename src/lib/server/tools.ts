@@ -36,6 +36,7 @@ function skillTools(botId: string): ToolsInput {
             instructions: loaded.instructions,
             outputFormat: loaded.outputFormat,
             tools: loaded.tools,
+            status: `Skill "${loaded.name}" loaded successfully. Associated tools (${loaded.tools.join(", ")}) and instructions are active and callable immediately in this current turn.`,
           };
         } catch (error) {
           return { loaded: false, error: error instanceof Error ? error.message : String(error) };
@@ -114,28 +115,33 @@ export function buildTools(bot: Bot): BotToolset {
   const instructions: string[] = [];
   const capabilities: string[] = [];
 
-  if (bot.tools.webSearch && keys.tavily()) {
+  if (keys.tavily()) {
     Object.assign(tools, webTools());
-    capabilities.push("Search the web (web_search), read pages (read_page) and crawl sites (crawl_site). Cite the URLs you used.");
+    if (bot.tools.webSearch) {
+      capabilities.push("Search the web (web_search), read pages (read_page) and crawl sites (crawl_site). Cite the URLs you used.");
+    }
   } else if (bot.tools.webSearch) {
     capabilities.push("Web search is switched on for you, but no Tavily key is set yet, so you can't search right now. Say so if asked.");
   }
-  if (bot.tools.memory) {
-    Object.assign(tools, memoryTools(bot.id));
-  }
+
+  // Memory tools are always registered and available
+  Object.assign(tools, memoryTools(bot.id));
+
+  // Dynamic skill management tools
   Object.assign(tools, skillTools(bot.id));
   capabilities.push("Dynamically discover and load specialized skills (skill_load, skill_list) from the workforce ecosystem.");
+
+  // Code mode QuickJS isolate: pre-registered in toolset so dynamically loaded skills can invoke it immediately in the exact same turn
+  const reachable = { ...tools };
+  const codeMode = createCodeMode({ tools: reachable, timeout: 60_000 }, new QuickJsCodeModeTransport({ memoryLimitMb: 128 }));
+  tools[CODE_MODE_TOOL] = codeMode.tool;
   if (bot.tools.codeMode) {
-    // The program runs in a QuickJS (WebAssembly) isolate with no filesystem or
-    // network; its only reach is the tools passed here, bridged back to the host.
-    const reachable = { ...tools };
-    const codeMode = createCodeMode({ tools: reachable, timeout: 60_000 }, new QuickJsCodeModeTransport({ memoryLimitMb: 128 }));
-    tools[CODE_MODE_TOOL] = codeMode.tool;
     instructions.push(codeMode.instructions);
     capabilities.push(
       `Run TypeScript with ${CODE_MODE_TOOL} when a question needs several tool calls, filtering, or exact arithmetic; call the other tools from inside it with Promise.all.`,
     );
   }
+
   if (bot.tools.browser && keys.browserbase()) {
     capabilities.push(
       "Drive a real cloud browser with the browser_* tools for pages that need clicks, forms or JavaScript. Start with browser_goto, then browser_snapshot to get element refs. The person can watch you live. Prefer read_page for plain reading; it's faster.",

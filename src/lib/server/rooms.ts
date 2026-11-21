@@ -6,9 +6,9 @@ import { listBots, listMessages, listCollaborationRecords, saveCollaborationReco
 import { pickResponders } from "./jev";
 import { runTurn, stopEpochOf } from "./runtime";
 import { readSharedMemory } from "./memory-files";
-import { isChallengeContent } from "./execution-policy";
+import { isChallengeContent, parseReviewFindings, type StructuredReviewFindings } from "./execution-policy";
 
-export { isChallengeContent };
+export { isChallengeContent, parseReviewFindings, type StructuredReviewFindings };
 
 /** How many bot-to-bot @mention hops one message from the person can start. */
 const MAX_HANDOFF_DEPTH = 2;
@@ -55,6 +55,49 @@ function authorName(message: ChatMessage, bots: Map<string, Bot>): string {
   return bots.get(message.botId ?? "")?.name ?? "A former member";
 }
 
+export async function executeReviewerAudit(
+  room: Room,
+  reviewer: Bot,
+  members: Bot[],
+  summary: string,
+  conversationId: string,
+): Promise<{ reviewMessage: ChatMessage | null; findings: StructuredReviewFindings | null }> {
+  const reviewPrompt = [
+    `[EXPLICIT REVIEW STEP: EVIDENCE AUDIT in "${room.name}"]`,
+    `You are the designated reviewer (${reviewer.name}, @${reviewer.handle}). Your responsibility is a rigorous audit of the evidence, assumptions, calculations, and claims produced by your teammates.`,
+    "Do NOT produce superficial praise. Actively verify claims against evidence, detect any unsupported numbers, unverified statements, or internal contradictions.",
+    "You MUST format your findings as structured JSON inside ```json ... ```:",
+    JSON.stringify(
+      {
+        verdict: "challenge",
+        targetBotHandle: members.find((m) => m.id !== reviewer.id)?.handle || "agent",
+        claimsAudited: ["Claim 1 audited", "Claim 2 audited"],
+        evidenceAssessment: "Detailed critique of evidence, citations, and calculations",
+        materialDefects: ["Contradiction in pricing", "Unsupported revenue claim"],
+        recommendations: "Specific corrections required from the agent",
+        confidence: 0.95,
+      },
+      null,
+      2,
+    ),
+    "Follow the JSON block with your plain text teammate commentary explaining your audit.",
+    `Contributions under audit:\n${summary}`,
+  ].join("\n\n");
+
+  const reviewMessage = await runTurn({
+    bot: reviewer,
+    conversationId,
+    content: reviewPrompt,
+    route: { by: "handoff" },
+  });
+
+  if (!reviewMessage || reviewMessage.status !== "done") {
+    return { reviewMessage, findings: null };
+  }
+
+  const findings = parseReviewFindings(messageText(reviewMessage), members);
+  return { reviewMessage, findings };
+}
 
 /** Everything in the room since this bot last spoke (at most the last 30 lines). */
 function catchUp(history: ChatMessage[], bot: Bot, bots: Map<string, Bot>): string[] {
@@ -156,29 +199,66 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
     }
   }
   const responderIds = new Set(initial.map(({ bot }) => bot.id));
-  const reviewer = members.find((bot) => !responderIds.has(bot.id));
+
+  // Guaranteed explicit review step: select reviewer (designated lead, non-responder, or senior peer)
+  let reviewer: Bot | undefined;
+  if (members.length > 1) {
+    reviewer = members.find((bot) => !responderIds.has(bot.id));
+    if (!reviewer && room.leadId) {
+      reviewer = members.find((bot) => bot.id === room.leadId);
+    }
+    if (!reviewer) {
+      reviewer = members[0];
+    }
+  }
+
   if (reviewer && stopEpochOf(conversationId) === epoch) {
     const transcript = await listMessages(conversationId, 60);
-    const summary = transcript.filter((message) => message.role === "bot" && message.status === "done")
-      .map((message) => `${authorName(message, bots)}: ${messageText(message)}`).join("\n\n");
-    const review = await runTurn({
-      bot: reviewer,
-      conversationId,
-      content: [
-        `Review the other agents' work in "${room.name}".`,
-        "Check for unsupported claims, contradictions, missing perspectives and unaddressed user requirements.",
-        "If you find a material issue, challenge it with a concise explanation. Otherwise state what you verified and any remaining uncertainty.",
-        `Contributions:\n${summary}`,
-      ].join("\n\n"),
-      route: { by: "handoff" },
-    });
-    if (review && review.status === "done") {
-      const text = messageText(review);
-      const isChallenge = isChallengeContent(text);
-      const challenged = members.find(
-        (b) => b.id !== reviewer.id && (text.toLowerCase().includes(b.name.toLowerCase()) || text.toLowerCase().includes(`@${b.handle.toLowerCase()}`)),
+    const summary = transcript
+      .filter((message) => message.role === "bot" && message.status === "done" && message.botId !== reviewer!.id)
+      .map((message) => `${authorName(message, bots)} (@${bots.get(message.botId ?? "")?.handle ?? "agent"}):\n${messageText(message)}`)
+      .join("\n\n");
+
+    if (summary.trim()) {
+      const { reviewMessage, findings } = await executeReviewerAudit(
+        room,
+        reviewer,
+        members,
+        summary,
+        conversationId,
       );
-      await recordCollaboration(room, reviewer.id, isChallenge ? "challenge" : "verification", text, challenged?.id);
+
+      if (reviewMessage && findings) {
+        const targetBotId = findings.targetBotId || members.find((m) => m.id !== reviewer!.id)?.id;
+
+        if (findings.verdict === "challenge") {
+          const detail = findings.materialDefects.length
+            ? findings.materialDefects.join("; ")
+            : findings.evidenceAssessment;
+          await recordCollaboration(
+            room,
+            reviewer.id,
+            "challenge",
+            `[Evidence Challenge] ${detail}`,
+            targetBotId,
+          );
+
+          if (targetBotId && targetBotId !== reviewer.id) {
+            const challenged = members.find((m) => m.id === targetBotId);
+            if (challenged && !queue.some((q) => q.bot.id === challenged.id)) {
+              queue.push({ bot: challenged, route: { by: "handoff" }, depth: 1 });
+            }
+          }
+        } else {
+          await recordCollaboration(
+            room,
+            reviewer.id,
+            "verification",
+            `[Evidence Verified] Claims audited: ${findings.claimsAudited.join(", ") || "All contributions verified"}. ${findings.evidenceAssessment}`,
+            targetBotId,
+          );
+        }
+      }
     }
   }
   while (queue.length && stopEpochOf(conversationId) === epoch) {
