@@ -30,3 +30,48 @@ const plan = await request("/api/chief-of-staff", {
 requireCount("Chief of Staff tasks", plan.tasks.length, 3);
 
 console.log(`PASS mock mode: ${String(bootstrap.status.mock)}`);
+
+const smokeApproval = await request("/api/approvals", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    botId: bootstrap.bots[0].id,
+    toolName: "external_action",
+    action: "Smoke test external action",
+    preview: "This action must not execute.",
+  }),
+});
+const rejected = await request(`/api/approvals/${smokeApproval.approval.id}`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ resolution: "reject" }),
+});
+if (rejected.approval.status !== "rejected") throw new Error("Approval rejection did not persist.");
+console.log("PASS approval rejection persisted");
+
+await request("/api/shared-memory/project/smoke-test", {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ content: "# Smoke test memory\n- Persistence verified", reason: "Automated smoke test" }),
+});
+const remembered = await request("/api/shared-memory/project/smoke-test");
+if (!remembered.content.includes("Persistence verified")) throw new Error("Shared memory did not persist.");
+console.log("PASS shared memory persistence");
+
+const cancelledPlan = await request("/api/executions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    name: "Cancellation smoke test",
+    instruction: "Verify cancellation persists.",
+    tasks: [{
+      key: "cancel-me",
+      title: "Cancellation probe",
+      description: "This task should be cancelled.",
+      assignedBotId: bootstrap.bots[0].id,
+    }],
+  }),
+});
+const cancelled = await request(`/api/executions/${cancelledPlan.execution.id}/cancel`, { method: "POST" });
+if (cancelled.execution.status !== "cancelled") throw new Error("Execution cancellation did not persist.");
+console.log("PASS execution cancellation");
