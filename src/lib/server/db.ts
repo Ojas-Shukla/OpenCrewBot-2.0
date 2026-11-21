@@ -130,10 +130,18 @@ export async function getBot(id: string): Promise<Bot | null> {
 }
 
 export async function saveBot(bot: Bot): Promise<void> {
-  await (await db()).execute({
-    sql: "INSERT INTO bots (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-    args: [bot.id, JSON.stringify(bot)],
-  });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await (await db()).execute({
+        sql: "INSERT INTO bots (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+        args: [bot.id, JSON.stringify(bot)],
+      });
+      return;
+    } catch (error) {
+      if (attempt === 5 || !(error instanceof Error) || !error.message.includes("SQLITE_BUSY")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 export async function deleteBotRow(id: string): Promise<void> {
@@ -155,10 +163,18 @@ export async function getRoom(id: string): Promise<Room | null> {
 }
 
 export async function saveRoom(room: Room): Promise<void> {
-  await (await db()).execute({
-    sql: "INSERT INTO rooms (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-    args: [room.id, JSON.stringify(room)],
-  });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await (await db()).execute({
+        sql: "INSERT INTO rooms (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+        args: [room.id, JSON.stringify(room)],
+      });
+      return;
+    } catch (error) {
+      if (attempt === 5 || !(error instanceof Error) || !error.message.includes("SQLITE_BUSY")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 export async function deleteRoomRow(id: string): Promise<void> {
