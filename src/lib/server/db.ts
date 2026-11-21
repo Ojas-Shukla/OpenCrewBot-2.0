@@ -2,7 +2,7 @@
 // its own store (mastra.db) for each bot's model-facing thread history.
 import { createClient, type Client } from "@libsql/client";
 import { APP_DB_URL } from "./config";
-import type { Bot, ChatMessage, ConversationId, Room } from "@/lib/shared/types";
+import type { Bot, ChatMessage, ConversationId, Room, ExecutionRun, ExecutionTask } from "@/lib/shared/types";
 
 // Cached across hot reloads, together with the file it points at, so a
 // changed database path opens a fresh connection instead of reusing one
@@ -10,7 +10,7 @@ import type { Bot, ChatMessage, ConversationId, Room } from "@/lib/shared/types"
 const g = globalThis as unknown as { __opencrewbotDb?: { url: string; schema?: number; client: Promise<Client> } };
 
 /** Bump when a table is added, so a hot-reloaded server re-runs the CREATE statements. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 async function open(): Promise<Client> {
   const db = createClient({ url: APP_DB_URL });
@@ -31,6 +31,25 @@ async function open(): Promise<Client> {
         generation INTEGER NOT NULL DEFAULT 0,
         last_read_at TEXT
       )`,
+      `CREATE TABLE IF NOT EXISTS execution_runs (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS execution_runs_by_created ON execution_runs (created_at)",
+      `CREATE TABLE IF NOT EXISTS execution_tasks (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS execution_tasks_by_run ON execution_tasks (run_id, created_at)",
+      `CREATE TABLE IF NOT EXISTS approval_requests (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS memory_records (
+        id TEXT PRIMARY KEY, scope TEXT NOT NULL, owner_id TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS memory_records_by_owner ON memory_records (scope, owner_id, created_at)",
+      `CREATE TABLE IF NOT EXISTS audit_events (
+        id TEXT PRIMARY KEY, event_type TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS audit_events_by_created ON audit_events (created_at)",
     ],
     "write",
   );
@@ -193,4 +212,52 @@ export async function bumpGeneration(conversationId: ConversationId): Promise<nu
     args: [conversationId],
   });
   return conversationGeneration(conversationId);
+}
+
+// ── durable execution records ──────────────────────────────────────────
+
+export async function saveExecutionRun(run: ExecutionRun): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO execution_runs (id, status, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
+    args: [run.id, run.status, run.createdAt, JSON.stringify(run)],
+  });
+}
+
+export async function getExecutionRun(id: string): Promise<ExecutionRun | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM execution_runs WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as ExecutionRun : null;
+}
+
+export async function listExecutionRuns(limit = 50): Promise<ExecutionRun[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM execution_runs ORDER BY created_at DESC LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ExecutionRun);
+}
+
+export async function saveExecutionTask(task: ExecutionTask): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO execution_tasks (id, run_id, status, created_at, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
+    args: [task.id, task.runId, task.status, task.createdAt, JSON.stringify(task)],
+  });
+}
+
+export async function getExecutionTask(id: string): Promise<ExecutionTask | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM execution_tasks WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as ExecutionTask : null;
+}
+
+export async function listExecutionTasks(runId: string): Promise<ExecutionTask[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM execution_tasks WHERE run_id = ? ORDER BY created_at", args: [runId] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ExecutionTask);
+}
+
+export async function writeAuditEvent(event: { id: string; type: string; createdAt: string; data: unknown }): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO audit_events (id, event_type, created_at, data) VALUES (?, ?, ?, ?)",
+    args: [event.id, event.type, event.createdAt, JSON.stringify(event.data)],
+  });
+}
+
+export async function listAuditEvents(limit = 100): Promise<Array<{ id: string; type: string; createdAt: string; data: unknown }>> {
+  const rows = await (await db()).execute({ sql: "SELECT id, event_type, created_at, data FROM audit_events ORDER BY created_at DESC LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => ({ id: String(row.id), type: String(row.event_type), createdAt: String(row.created_at), data: JSON.parse(String(row.data)) }));
 }

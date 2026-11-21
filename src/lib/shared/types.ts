@@ -171,3 +171,48 @@ export interface ConnectionOption {
   kind: "composio" | "mcp";
   logo?: string;
 }
+
+
+// Durable orchestration records. These are separate from chat messages so a
+// workflow can be inspected, retried, and recovered independently of a UI session.
+export type ExecutionRunStatus = "planned" | "running" | "completed" | "failed" | "cancelled";
+export type ExecutionTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "cancelled";
+
+export interface ExecutionTask {
+  id: string;
+  runId: string;
+  title: string;
+  description: string;
+  assignedBotId: string;
+  dependencies: string[];
+  status: ExecutionTaskStatus;
+  attempts: number;
+  maxAttempts: number;
+  output?: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export interface ExecutionRun {
+  id: string;
+  name: string;
+  instruction: string;
+  status: ExecutionRunStatus;
+  taskIds: string[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface ExecutionTaskInput {
+  /** Stable key within the submitted plan; dependencies refer to these keys. */
+  key: string;
+  title: string;
+  description: string;
+  assignedBotId: string;
+  dependencies?: string[];
+  maxAttempts?: number;
+}
