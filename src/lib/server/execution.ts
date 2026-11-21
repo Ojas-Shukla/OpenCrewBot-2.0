@@ -4,6 +4,7 @@ import { getBot, getExecutionRun, listExecutionRuns, listExecutionTasks, saveExe
 import { InputError } from "./errors";
 import { runTurn, stopConversation } from "./runtime";
 import { readSharedMemory } from "./memory-files";
+import { routeModelForTask } from "./models";
 
 const activeRuns = new Set<string>();
 
@@ -207,13 +208,17 @@ export async function executeExecution(id: string): Promise<void> {
             `Shared project memory:\n${readSharedMemory("project", id).trim() || "(empty)"}`,
             "Complete only this task. Make your output self-contained, identify uncertainty, and do not claim actions you did not perform.",
           ].filter(Boolean).join("\n\n");
+          const routedBot = {
+            ...bot,
+            model: await routeModelForTask(bot, `${task.title}\n${task.description}`),
+          };
 
           let succeeded = false;
           while (task.attempts < task.maxAttempts && !succeeded) {
             task.attempts += 1;
             let message: Awaited<ReturnType<typeof runTurn>> | null = null;
             const conversationId = `execution:${id}`;
-            const turn = runTurn({ bot, conversationId, content: prompt });
+            const turn = runTurn({ bot: routedBot, conversationId, content: prompt });
             if (task.timeoutMs) {
               const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), task.timeoutMs));
               message = await Promise.race([turn, timeout]);

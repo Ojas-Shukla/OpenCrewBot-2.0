@@ -17,6 +17,7 @@ import type {
   ApprovalRequest,
   WorkflowTemplate,
   ScheduledWorkflow,
+  CollaborationRecord,
 } from "@/lib/shared/types";
 
 async function call<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
@@ -95,4 +96,8 @@ export const api = {
     call<{ content: string }>(`/api/shared-memory/${scope}/${encodeURIComponent(ownerId)}`),
   saveSharedMemory: (scope: "room" | "project" | "user", ownerId: string, content: string, reason?: string) =>
     call<{ content: string }>(`/api/shared-memory/${scope}/${encodeURIComponent(ownerId)}`, { method: "PUT", json: { content, reason } }),
+  collaboration: (roomId?: string) =>
+    call<{ records: CollaborationRecord[] }>(`/api/collaboration${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`),
+  createCollaboration: (input: Omit<CollaborationRecord, "id" | "createdAt" | "status">) =>
+    call<{ record: CollaborationRecord }>("/api/collaboration", { method: "POST", json: input }),
 };

@@ -111,3 +111,16 @@ export function costUsd(model: ModelOption | undefined, input: number, output: n
   if (!model || model.inputPerM === null || model.outputPerM === null) return null;
   return (input * model.inputPerM + output * model.outputPerM) / 1e6;
 }
+
+export async function routeModelForTask(
+  bot: { model: string; fallbackModels?: string[] },
+  taskDescription: string,
+): Promise<string> {
+  const candidates = [bot.model, ...(bot.fallbackModels ?? [])].filter(Boolean);
+  const available = await listModels();
+  const availableIds = new Set(available.map((model) => model.id));
+  const usable = candidates.find((candidate) => availableIds.has(candidate));
+  if (usable) return usable;
+  if (process.env.LOCAL_MODEL_ID && taskDescription.trim()) return process.env.LOCAL_MODEL_ID;
+  return candidates[0] ?? DEFAULT_MODEL;
+}

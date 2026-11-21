@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { ExecutionRun, ExecutionTaskInput, ScheduledWorkflow, WorkflowTemplate } from "@/lib/shared/types";
 import { InputError } from "./errors";
-import { getBot, getWorkflowTemplate, listScheduledWorkflows, listWorkflowTemplates, saveScheduledWorkflow, saveWorkflowTemplate } from "./db";
+import {
+  getBot,
+  getWorkflowTemplate,
+  listScheduledWorkflows,
+  listWorkflowRuns,
+  listWorkflowTemplates,
+  saveScheduledWorkflow,
+  saveWorkflowRun,
+  saveWorkflowTemplate,
+} from "./db";
 import { createExecution, executeExecution } from "./execution";
-import { listWorkflowRuns, saveWorkflowRun } from "./db";
 
 function validateTaskTemplates(tasks: ExecutionTaskInput[]) {
   if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 30) throw new InputError("A workflow needs between 1 and 30 task templates.");
@@ -36,6 +44,18 @@ export async function createWorkflowTemplate(input: { name: string; description:
 
 export function workflows() {
   return listWorkflowTemplates();
+}
+
+function nextRunAt(cron: string, from = new Date()): string {
+  if (cron === "@hourly") return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
+  if (cron === "@daily") return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  if (cron.startsWith("*/")) {
+    const minutes = Number(cron.split(" ")[0].slice(2));
+    if (Number.isFinite(minutes) && minutes > 0) return new Date(from.getTime() + minutes * 60 * 1000).toISOString();
+  }
+  if (/^[0-9]+ \* \* \* \*$/.test(cron)) return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
+  if (/^[0-9]+ [0-9]+ \* \* \*$/.test(cron)) return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
 }
 
 export async function createScheduledWorkflow(input: { name: string; workflowId: string; cron: string }): Promise<ScheduledWorkflow> {
@@ -96,16 +116,6 @@ export function workflowRuns(workflowId?: string) {
   return listWorkflowRuns(workflowId);
 }
 
-function nextRunAt(cron: string, from = new Date()): string {
-  if (cron === "@hourly") return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-  if (cron === "@daily") return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  const interval = cron.match(/^\\*\\/(\d+) \* \* \* \*$/);
-  if (interval) return new Date(from.getTime() + Number(interval[1]) * 60 * 1000).toISOString();
-  if (/^\d+ \* \* \* \*$/.test(cron)) return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-  if (/^\d+ \d+ \* \* \*$/.test(cron)) return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-}
-
 const g = globalThis as unknown as { __opencrewbotScheduler?: { started: boolean } };
 
 export function startWorkflowScheduler(): void {
@@ -118,14 +128,13 @@ export function startWorkflowScheduler(): void {
       if (schedule.status !== "active" || !schedule.nextRunAt || Date.parse(schedule.nextRunAt) > now) continue;
       try {
         await runScheduledWorkflow(schedule.id);
-        const next = nextRunAt(schedule.cron);
-        await saveScheduledWorkflow({ ...schedule, nextRunAt: next, updatedAt: new Date().toISOString() });
-      } catch (error) {
         await saveScheduledWorkflow({
           ...schedule,
-          status: "paused",
+          nextRunAt: nextRunAt(schedule.cron),
           updatedAt: new Date().toISOString(),
         });
+      } catch (error) {
+        await saveScheduledWorkflow({ ...schedule, status: "paused", updatedAt: new Date().toISOString() });
         console.error("[workflow-scheduler]", error);
       }
     }
