@@ -98,7 +98,7 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
   const { bots: responders, route } = await decideResponders(room, members, messageText(userMessage), history, bots);
 
   const initial = responders.map((bot) => ({ bot, route, depth: 0 }));
-  await Promise.all(initial.map(async ({ bot, route: note, depth }) => {
+  await Promise.all(initial.map(async ({ bot, route: note }) => {
     const transcript = await listMessages(conversationId, 60);
     await runTurn({
       bot,

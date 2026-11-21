@@ -29,6 +29,8 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload is a stable, local snapshot refresh
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refreshes external API state once on open
     void reload().catch((error) => toast(error instanceof Error ? error.message : "Couldn't load operations."));
   }, []);
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExecutionTaskInput, ScheduledWorkflow, WorkflowTemplate } from "@/lib/shared/types";
+import type { ExecutionRun, ExecutionTaskInput, ScheduledWorkflow, WorkflowTemplate } from "@/lib/shared/types";
 import { InputError } from "./errors";
 import { getBot, getWorkflowTemplate, listScheduledWorkflows, listWorkflowTemplates, saveScheduledWorkflow, saveWorkflowTemplate } from "./db";
 import { createExecution, executeExecution } from "./execution";
