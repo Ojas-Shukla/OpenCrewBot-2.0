@@ -1,7 +1,7 @@
 import { conversationParam, handle } from "@/lib/server/http";
 import { executeExecution, getExecution } from "@/lib/server/execution";
 
-export async function POST(_request: Request, ctx: RouteContext<"/api/executions/[id]/run">) {
+export async function POST(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   const id = conversationParam((await ctx.params).id);
   return handle(async () => {
     const execution = await getExecution(id);

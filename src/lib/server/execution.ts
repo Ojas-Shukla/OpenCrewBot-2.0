@@ -104,7 +104,7 @@ export async function executeExecution(id: string): Promise<void> {
   try {
   // A POST /run on a failed execution is an explicit retry. Preserve successful
   // prerequisite outputs, but reopen failed/blocked tasks with a fresh retry budget.
-  let persistedTasks = await listExecutionTasks(id);
+  const persistedTasks = await listExecutionTasks(id);
   if (run.status === "failed") {
     for (const task of persistedTasks) {
       if (task.status === "failed" || task.status === "blocked") {

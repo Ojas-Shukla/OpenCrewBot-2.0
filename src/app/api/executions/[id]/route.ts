@@ -1,7 +1,7 @@
 import { conversationParam, handle } from "@/lib/server/http";
 import { getExecution } from "@/lib/server/execution";
 
-export async function GET(_request: Request, ctx: RouteContext<"/api/executions/[id]">) {
+export async function GET(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   const id = conversationParam((await ctx.params).id);
   return handle(async () => {
     const execution = await getExecution(id);
