@@ -16,7 +16,7 @@ Built with [Mastra](https://mastra.ai) and [Nebius Token Factory](https://tokenf
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Built by Studio1 team](https://img.shields.io/badge/built%20by-Studio1%20team-ff6b1a)](https://studio1hq.com)
 
-Run OpenCrewBot on your own machine. Bring a Nebius Token Factory key for the models, and optionally Tavily, Browserbase and Jev keys for search, browsing and room routing. With no keys at all, it runs in mock mode so you can try the whole interface first.
+Run OpenCrewBot on your own machine. Bring a Nebius Token Factory key or configure an OpenAI-compatible provider for model calls. Tavily, Browserbase, Jev and Composio credentials enable their respective integrations. Without model credentials, the app uses mock mode so you can try the interface first.
 
 </div>
 
@@ -46,7 +46,7 @@ Give each bot a name, a role, instructions, a model and a set of tools. Each rep
 
 **Choose the model from the bot's Details.** **Change** opens a model sheet with the available models, search, context size, tool support and price when known. OpenAI-compatible endpoints can be added through server configuration. Executions try their task model, agent model and configured fallbacks in order when a model call fails. Automatic per-message model routing is not provided.
 
-The details panel keeps a short summary of the bot, with the full editor one click away. Changes apply from the bot's next reply.
+The agent factory can generate a bot definition from an instruction and validates the model, tools, skills and fallback models against configured options. The details panel keeps a short summary of the bot, with the full editor one click away. Changes apply from the bot's next reply.
 
 ### Rooms
 
@@ -64,9 +64,23 @@ Put bots in a room and talk to all of them at once. @mention a bot to choose who
 
 _One message, three bots. Jev picks Atlas to answer, Atlas hands research to Scout and drafting to Quill. Staged example content._
 
+Room responses can run concurrently. The room records intermediate contributions and hand-offs, then gives a peer a bounded review turn. A review may challenge a contribution and request a correction; model-generated reviews are advisory and are not a guarantee of factual verification.
+
+### Workforce operations
+
+The Chief of Staff asks a selected planner agent for a dependency-aware plan, validates task assignments and dependencies, and creates an execution. If the response cannot be used, it falls back to contributions from the configured specialist roster and a consolidation task. The execution engine runs ready tasks concurrently, tracks attempts and status, supports cancellation and retries, and recovers interrupted tasks.
+
+Create workflow templates from task definitions, run them manually, or schedule them with five-field UTC cron expressions. Execution history, approvals, shared memory and workflow controls are available from the Operations panel.
+
+### Skills
+
+Eight reusable skills are seeded and can be assigned to agents. Relevant skills are selected from their definitions and instructions; declared built-in capabilities can be enabled in the agent runtime. Skill selection uses text matching and is not an unrestricted tool/plugin system.
+
 ### Memory
 
 Each bot keeps its notes in one plain Markdown file, `data/workspaces/<botId>/MEMORY.md`. The first 200 lines load into the bot's prompt every turn. The bot adds and fixes lines with two small tools, `memory_add` and `memory_edit`, and you can read or edit the same file in the Memory tab, or in any editor. Anything that looks like a password, token or key is redacted before it's written.
+
+Shared project memory is included in execution task context, and shared room memory is included in room prompts. Shared memory can also be managed by scope from the Operations panel.
 
 <div align="center">
 
@@ -82,7 +96,7 @@ _The Memory tab is the file itself. The panel refreshes live when the bot writes
 
 ### Ask before acting
 
-On **Ask first**, a bot stops before a tool action and shows an approval card in chat. **Allow once** runs it; **Deny** skips it and the bot carries on. **Controlled access** only auto-approves the exact tool names configured for that bot; every other tool still asks. **Full access** acts without asking. Approval decisions are also recorded centrally. Bots can pause to ask you a question, with suggested answers as buttons, and resume when you reply.
+On **Ask first**, a bot stops before a tool action and shows an approval card in chat. **Allow once** runs it; **Always allow** adds that exact tool name to the bot's controlled allowlist; **Deny** rejects it. **Controlled access** only auto-approves explicitly allowed tool names; other tools still ask. **Full access** acts without asking. Decisions and expirations are recorded centrally. Bots can pause to ask you a question, with suggested answers as buttons, and resume when you reply.
 
 <div align="center">
 
@@ -123,7 +137,7 @@ OpenCrewBot doesn't build its own agent loop. Each bot gets a Mastra [`AgentCont
 
 ![Diagram](/public/image.png)
 
-All keys stay on the server. Without a Nebius key, bots run on a scripted mock model that streams replies and calls the real tools, so every part of the interface can be tried before you connect anything.
+All keys stay on the server. Without Nebius or configured OpenAI-compatible model credentials, bots run on a scripted mock model that streams replies and exercises supported tools, so you can try the interface before configuring a provider.
 
 ## Get started
 
@@ -137,7 +151,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-Open **http://localhost:3000**. On first run OpenCrewBot creates three bots (Scout for research, Quill for writing, Atlas for planning) and a room called Studio.
+Open **http://localhost:3000**. On first run OpenCrewBot seeds eight agents and four collaboration rooms, including Scout (research), Quill (writing), Atlas (planning), and Studio.
 
 Add your keys to `.env`, then restart `pnpm dev`. Every key is optional:
 
@@ -148,6 +162,9 @@ Add your keys to `.env`, then restart `pnpm dev`. Every key is optional:
 | `OPENCREWBOT_OPENAI_COMPATIBLE_API_KEY` | API key for the compatible endpoint. |
 | `OPENCREWBOT_OPENAI_COMPATIBLE_PROVIDER_ID` | Optional provider prefix (default `openai-compatible`). |
 | `OPENCREWBOT_OPENAI_COMPATIBLE_MODELS` | Comma-separated model IDs exposed by the compatible endpoint. |
+| `CRON_SECRET` | Secret required by the authenticated scheduled-workflow trigger. Set it on the app and scheduler worker. |
+| `OPENCREWBOT_URL` | Optional base URL used by the standalone scheduler worker (default `http://127.0.0.1:3000`). |
+| `SCHEDULER_INTERVAL_MS` | Optional polling interval for the standalone scheduler worker in milliseconds (default `30000`). |
 | `TAVILY_API_KEY` | Web search, page reading and site crawls. |
 | `BROWSERBASE_API_KEY` | Cloud browsers for bots with the Browser tool. |
 | `BROWSERBASE_PROJECT_ID` | Optional. Inferred from the key when empty. |
@@ -164,6 +181,16 @@ Add your keys to `.env`, then restart `pnpm dev`. Every key is optional:
 - `ask me something` shows a question card and resumes when you answer.
 - `open https://example.com` shows an approval card first, in a bot with the Browser tool on.
 - `search for Nebius Token Factory` runs a real Tavily search once `TAVILY_API_KEY` is set.
+
+### Scheduled workflow runner
+
+The app starts an in-process scheduler when its server service boots. To run a separate scheduler worker, configure the same `CRON_SECRET` on the app and worker, start the app, then run this in another terminal:
+
+```sh
+pnpm scheduler
+```
+
+The worker polls the authenticated `POST /api/workflows/cron` endpoint at the configured interval. The database lease helps prevent duplicate triggers if more than one scheduler is running. The standalone script is still a process that must remain running; for production, supervise it with your process manager and monitor failures. It does not provide a hosted queue or guaranteed catch-up of every missed run.
 
 ## Data and privacy
 
@@ -184,28 +211,31 @@ It assumes one local owner and has no sign-in. To keep it that way, `pnpm dev` a
 
 | Area | Included |
 | --- | --- |
-| Bots | Name, role, instructions, color, model, tools and approval level per bot; pin, search, unread counts, live typing status |
-| Models | Model sheet with suggested picks, search and the live Token Factory catalog; switch without a restart; tokens and cost on every reply |
+| Bots | Eight seeded agents, live-model-generated agent definitions, role, instructions, model, tools and approval level; pin, search, unread counts, live typing status |
+| Models | Nebius and configured OpenAI-compatible models; fallback candidates for execution tasks; switch without a restart; tokens and cost on replies |
 | Connections | Composio apps with one-click sign-in, your own MCP servers (GitHub preset), per-bot access, approval for actions |
 | Chat | Streaming Markdown, reasoning, tool steps with sources, Stop, and messages queued while a bot is busy |
-| Rooms | @mentions, `@everyone`, Auto routing with Jev, Lead and Everyone modes, bot-to-bot hand-offs |
-| Memory | One `MEMORY.md` per bot, loaded every turn, editable in the app, with secret redaction |
-| Approvals | Allow once / Deny cards for browser actions, plus ask-you question cards that resume the run |
+| Rooms | Four seeded rooms, @mentions, `@everyone`, Auto routing with Jev, parallel responses, hand-offs, collaboration records, and a bounded peer-review step |
+| Memory | Per-agent `MEMORY.md`, plus shared user, project and room memory; editable in the app, with secret redaction |
+| Approvals | Central approval records, Allow once / Always allow / Deny, expiration, and ask-you question cards |
+| Execution | Chief of Staff planning, task dependencies, parallel ready tasks, retries, cancellation, recovery, task/run history |
+| Skills | Eight seeded reusable skills, text-based skill selection, and built-in capability provisioning |
+| Workflows | Workflow templates, manual runs, UTC cron schedules, in-process scheduler and authenticated standalone scheduler worker |
 | Browser | Browserbase session per bot, embedded live view with takeover, release on reset |
 | Code mode | Multi-tool TypeScript in a QuickJS sandbox with no filesystem or network access |
-| Mock mode | A scripted model that exercises the real tools, approvals and streaming without any keys |
+| Mock mode | A scripted model that exercises supported tools, approvals and streaming without model credentials |
 
-**Orchestration and scheduling.** The Chief of Staff asks the selected planner agent for a dependency-aware JSON plan, validates assigned agents and dependencies, and falls back to contributions from the configured specialist roster if the response is invalid. The execution engine runs ready tasks concurrently, retries with configured model candidates, and recovers interrupted tasks. Skills add their declared built-in capabilities to the agent runtime. Rooms persist intermediate outputs and run a bounded peer review. Cron expressions use five fields and UTC; the scheduler is process-local, with persisted leases to reduce duplicate runs across instances. For production or serverless deployments, use a durable external scheduler/worker.
+**Current limitations.** Planner fallback uses the configured specialist roster rather than regenerating a plan. Agent generation needs a working model provider; skill definitions are seeded and selection is text-based. Peer review depends on model output and is not a deterministic fact-check. The scheduler worker must remain running, and the app is single-user with no sign-in; keep it on localhost unless you add authentication and deployment protections. Composio, Browserbase, Jev and other live integrations require credentials and separate live verification. The seven assignment business demonstrations have not all been documented as end-to-end acceptance tests.
 
-**What's been verified.** The mock-mode smoke suite checks the seeded agent/room/skill counts, planner output, approval rejection persistence, shared memory, execution cancellation, and a scheduled workflow run through completion. Unit tests cover cron validation, fallback retries, cancellation between retry attempts, interrupted-task recovery, parallel-ready tasks, and controlled access. Live integrations still require separate credentials and verification; the mock tests do not prove external actions work.
+**Verification.** Run `pnpm exec tsc --noEmit`, `pnpm lint`, and `pnpm test:unit`. `pnpm test:smoke` requires the app to be running at `http://127.0.0.1:3000` (or set `OPENCREWBOT_TEST_URL`). Unit tests cover cron parsing, retry/cancellation policies, interrupted-task recovery, ready-task selection, controlled access, skill matching, review parsing, and cron-auth decision cases. The cron-auth test exercises policy logic, not the HTTP route itself. Mock tests do not prove external integrations work. In the current checkout, `pnpm build` compiles and generates routes, but Next.js stops the command afterward with a security-version warning; the dependency has not been upgraded.
 
 ### Extending it
 
-- Let bots delegate to each other in direct chats with Mastra subagents.
-- Add scheduled routines with Mastra schedules.
 - Let Jev pick the model for each message (fast for simple asks, strong for hard ones). It's shown as "coming soon" in the model sheet.
 - Let you talk to bots from Slack or Discord with Mastra Channels.
 - Add sign-in and multiple users before deploying it anywhere shared.
+- Add a durable queue and missed-run recovery for deployments that need stronger scheduling guarantees.
+- Add live integration acceptance tests and record the seven required business demonstrations.
 - Add voice: speak to a bot and have it read replies aloud.
 
 ## Project layout
