@@ -3,6 +3,7 @@ import type { ExecutionRun, ExecutionTask, ExecutionTaskInput } from "@/lib/shar
 import { getBot, getExecutionRun, listExecutionRuns, listExecutionTasks, saveExecutionRun, saveExecutionTask, writeAuditEvent } from "./db";
 import { InputError } from "./errors";
 import { runTurn, stopConversation } from "./runtime";
+import { readSharedMemory } from "./memory-files";
 
 const activeRuns = new Set<string>();
 
@@ -203,6 +204,7 @@ export async function executeExecution(id: string): Promise<void> {
             `Task: ${task.title}`,
             task.description,
             priorOutputs ? `Completed prerequisite work:\n${priorOutputs}` : "",
+            `Shared project memory:\n${readSharedMemory("project", id).trim() || "(empty)"}`,
             "Complete only this task. Make your output self-contained, identify uncertainty, and do not claim actions you did not perform.",
           ].filter(Boolean).join("\n\n");
 

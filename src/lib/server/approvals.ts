@@ -31,6 +31,14 @@ export async function resolveApprovalRequest(id: string, resolution: "allow_once
   };
   await saveApprovalRequest(resolved);
   await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: resolved });
+  if (resolved.conversationId && resolved.botId && resolved.toolCallId) {
+    const runtime = await import("./runtime");
+    if (resolution === "allow_once") {
+      await runtime.respondToApproval(resolved.conversationId, resolved.botId, resolved.toolCallId, true);
+    } else {
+      await runtime.respondToApproval(resolved.conversationId, resolved.botId, resolved.toolCallId, false);
+    }
+  }
   return resolved;
 }
 

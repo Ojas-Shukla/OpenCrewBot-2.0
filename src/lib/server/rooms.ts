@@ -1,7 +1,7 @@
 // Group rooms: decide who answers, give each bot the part of the room it
 // hasn't seen, and let a bot hand off to a teammate by @mentioning them.
 import type { Bot, ChatMessage, Room, RouteNote } from "@/lib/shared/types";
-import { listBots, listMessages } from "./db";
+import { listBots, listMessages, listCollaborationRecords } from "./db";
 import { pickResponders } from "./jev";
 import { runTurn, stopEpochOf } from "./runtime";
 import { readSharedMemory } from "./memory-files";
@@ -47,7 +47,7 @@ function catchUp(history: ChatMessage[], bot: Bot, bots: Map<string, Bot>): stri
     .map((m) => `${authorName(m, bots)}: ${messageText(m) || "(no text)"}`);
 }
 
-function roomPrompt(room: Room, bot: Bot, members: Bot[], lines: string[], handoff: boolean): string {
+function roomPrompt(room: Room, bot: Bot, members: Bot[], lines: string[], handoff: boolean, collaboration: string): string {
   const roster = members
     .map((b) => `- ${b.name} (@${b.handle})${b.title ? `, ${b.title}` : ""}${b.id === bot.id ? " (you)" : ""}`)
     .join("\n");
@@ -56,6 +56,7 @@ function roomPrompt(room: Room, bot: Bot, members: Bot[], lines: string[], hando
     `[Group room "${room.name}"${room.topic ? `, topic: ${room.topic}` : ""}]`,
     `Members:\n${roster}`,
     sharedMemory ? `Shared room memory:\n${sharedMemory.slice(0, 16 * 1024)}` : "",
+    collaboration ? `Structured collaboration records:\n${collaboration}` : "",
     `New in the room since your last message:\n${lines.join("\n") || "(nothing new)"}`,
     "---",
     handoff
@@ -95,6 +96,9 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
   const conversationId = roomConversationId(room.id);
   const epoch = stopEpochOf(conversationId);
   const history = await listMessages(conversationId, 60);
+  const collaborationRecords = (await listCollaborationRecords(room.id, 30))
+    .map((record) => `[${record.type}] ${record.fromBotId}${record.toBotId ? ` -> ${record.toBotId}` : ""}: ${record.content}`)
+    .join("\n");
   const { bots: responders, route } = await decideResponders(room, members, messageText(userMessage), history, bots);
 
   const initial = responders.map((bot) => ({ bot, route, depth: 0 }));
@@ -103,7 +107,7 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
     await runTurn({
       bot,
       conversationId,
-      content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff"),
+      content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff", collaborationRecords),
       route: note,
     });
   }));
@@ -125,7 +129,7 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
     const reply = await runTurn({
       bot,
       conversationId,
-      content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff"),
+      content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff", collaborationRecords),
       route: note,
     });
     if (!reply || reply.status !== "done" || depth >= MAX_HANDOFF_DEPTH) continue;

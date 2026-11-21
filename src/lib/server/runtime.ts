@@ -10,7 +10,8 @@ import { Memory } from "@mastra/memory";
 import { randomUUID } from "node:crypto";
 import type { Bot, ChatMessage, ConversationId, Part, RouteNote } from "@/lib/shared/types";
 import { MASTRA_DB_URL, OWNER_ID, isMock } from "./config";
-import { conversationGeneration, getBot, saveMessage } from "./db";
+import { conversationGeneration, getBot, listSkills, saveMessage } from "./db";
+import { createApprovalRequest } from "./approvals";
 import { publish } from "./bus";
 import { costUsd, findModel } from "./models";
 import { createMockModel } from "./mock-model";
@@ -97,7 +98,12 @@ async function buildRuntime(bot: Bot): Promise<BotRuntime> {
   const memory = new Memory({ storage: state.storage, options: { lastMessages: 40 } });
   const builtIn = buildTools(bot);
   const connectors = await buildConnectorTools(bot, `bot-${bot.id}-${Date.now()}`);
-  const capabilities = [...builtIn.capabilities, ...connectors.capabilities];
+  const skills = await listSkills();
+  const loadedSkills = skills.filter((skill) => (bot.skillIds ?? []).includes(skill.id));
+  const skillCapabilities = loadedSkills.map((skill) =>
+    `Loaded skill "${skill.name}": ${skill.description}\nInstructions: ${skill.instructions}\nOutput format: ${skill.outputFormat}`,
+  );
+  const capabilities = [...builtIn.capabilities, ...connectors.capabilities, ...skillCapabilities];
   const agent = new Agent({
     id: `bot-${bot.id}`,
     name: bot.name,
@@ -202,6 +208,7 @@ export function runningBots(conversationId: ConversationId): string[] {
 
 class TurnFolder {
   readonly message: ChatMessage;
+  private bot: Bot;
   private textPart = new Map<string, number>();
   private reasoningPart = new Map<string, number>();
   private toolPart = new Map<string, number>();
@@ -212,6 +219,7 @@ class TurnFolder {
   finished = false;
 
   constructor(conversationId: ConversationId, bot: Bot, route?: RouteNote) {
+    this.bot = bot;
     this.message = {
       id: randomUUID(),
       conversationId,
@@ -282,6 +290,18 @@ class TurnFolder {
           part = this.tool(event.toolCallId);
         }
         part!.status = "awaiting-approval";
+        void createApprovalRequest({
+          botId: this.bot.id,
+          conversationId: this.message.conversationId,
+          toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          action: part!.label,
+          preview: typeof event.args === "string" ? event.args : JSON.stringify(event.args ?? {}).slice(0, 4000),
+        }).catch((error) => console.error("[approval]", error));
+        if (this.bot.approval === "controlled" && (this.bot.controlledTools ?? []).includes(event.toolName)) {
+          const session = state.sessions.get(key(this.message.conversationId, this.bot.id));
+          if (session) void session.respondToToolApproval({ toolCallId: event.toolCallId, decision: "approve" });
+        }
         this.emit(true);
         break;
       }

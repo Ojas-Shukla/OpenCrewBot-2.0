@@ -31,6 +31,9 @@ export interface Bot {
   connections: string[];
   approval: ApprovalMode;
   controlledTools?: string[];
+  skillIds?: string[];
+  outputFormat?: string;
+  fallbackModels?: string[];
   pinned: boolean;
   createdAt: string;
 }
@@ -248,6 +251,7 @@ export interface ApprovalRequest {
   createdAt: string;
   resolvedAt?: string;
   resolution?: "allow_once" | "reject";
+  toolCallId?: string;
 }
 
 export interface WorkflowTemplate {
@@ -285,4 +289,19 @@ export interface ReusableSkill {
   tools: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type CollaborationEventType = "handoff" | "intermediate" | "challenge" | "verification" | "review";
+
+export interface CollaborationRecord {
+  id: string;
+  roomId: string;
+  runId?: string;
+  fromBotId: string;
+  toBotId?: string;
+  type: CollaborationEventType;
+  content: string;
+  status: "open" | "resolved";
+  createdAt: string;
+  resolvedAt?: string;
 }

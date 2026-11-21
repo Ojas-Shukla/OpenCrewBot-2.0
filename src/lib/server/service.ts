@@ -13,6 +13,7 @@ import { forgetConversation, resetBot, runTurn, runningBots, stopConversation } 
 import { messagePreview } from "@/lib/shared/preview";
 import { roomConversationId, runRoom } from "./rooms";
 import { seedSkills } from "./skills";
+import { startWorkflowScheduler } from "./workflows";
 
 export { InputError };
 
@@ -25,6 +26,7 @@ export function boot(): Promise<void> {
     await sweepInterrupted();
     await seed();
     await seedSkills();
+    startWorkflowScheduler();
   })();
   return g.__opencrewbotBoot;
 }

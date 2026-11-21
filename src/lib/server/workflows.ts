@@ -49,6 +49,7 @@ export async function createScheduledWorkflow(input: { name: string; workflowId:
     workflowId: input.workflowId,
     cron: input.cron.trim(),
     status: "active",
+    nextRunAt: nextRunAt(input.cron.trim()),
     createdAt: now,
     updatedAt: now,
   };
@@ -59,7 +60,12 @@ export async function createScheduledWorkflow(input: { name: string; workflowId:
 export async function setScheduledWorkflowStatus(id: string, status: "active" | "paused"): Promise<ScheduledWorkflow> {
   const schedule = await listScheduledWorkflows().then((items) => items.find((item) => item.id === id));
   if (!schedule) throw new InputError("Scheduled workflow not found.");
-  const updated = { ...schedule, status, updatedAt: new Date().toISOString() };
+  const updated = {
+    ...schedule,
+    status,
+    nextRunAt: status === "active" ? (schedule.nextRunAt ?? nextRunAt(schedule.cron)) : schedule.nextRunAt,
+    updatedAt: new Date().toISOString(),
+  };
   await saveScheduledWorkflow(updated);
   return updated;
 }
@@ -88,4 +94,42 @@ export async function runScheduledWorkflow(id: string): Promise<ExecutionRun> {
 
 export function workflowRuns(workflowId?: string) {
   return listWorkflowRuns(workflowId);
+}
+
+function nextRunAt(cron: string, from = new Date()): string {
+  if (cron === "@hourly") return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
+  if (cron === "@daily") return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const interval = cron.match(/^\\*\\/(\d+) \* \* \* \*$/);
+  if (interval) return new Date(from.getTime() + Number(interval[1]) * 60 * 1000).toISOString();
+  if (/^\d+ \* \* \* \*$/.test(cron)) return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
+  if (/^\d+ \d+ \* \* \*$/.test(cron)) return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
+}
+
+const g = globalThis as unknown as { __opencrewbotScheduler?: { started: boolean } };
+
+export function startWorkflowScheduler(): void {
+  const state = g.__opencrewbotScheduler ??= { started: false };
+  if (state.started) return;
+  state.started = true;
+  const tick = async () => {
+    const now = Date.now();
+    for (const schedule of await listScheduledWorkflows()) {
+      if (schedule.status !== "active" || !schedule.nextRunAt || Date.parse(schedule.nextRunAt) > now) continue;
+      try {
+        await runScheduledWorkflow(schedule.id);
+        const next = nextRunAt(schedule.cron);
+        await saveScheduledWorkflow({ ...schedule, nextRunAt: next, updatedAt: new Date().toISOString() });
+      } catch (error) {
+        await saveScheduledWorkflow({
+          ...schedule,
+          status: "paused",
+          updatedAt: new Date().toISOString(),
+        });
+        console.error("[workflow-scheduler]", error);
+      }
+    }
+  };
+  void tick();
+  setInterval(() => void tick(), 30 * 1000);
 }

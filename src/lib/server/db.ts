@@ -14,6 +14,7 @@ import type {
   ScheduledWorkflow,
   ReusableSkill,
   WorkflowTemplate,
+  CollaborationRecord,
 } from "@/lib/shared/types";
 
 // Cached across hot reloads, together with the file it points at, so a
@@ -76,6 +77,10 @@ async function open(): Promise<Client> {
       `CREATE TABLE IF NOT EXISTS skills (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS collaboration_records (
+        id TEXT PRIMARY KEY, room_id TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS collaboration_by_room ON collaboration_records (room_id, created_at)",
     ],
     "write",
   );
@@ -419,4 +424,20 @@ export async function getSkill(id: string): Promise<ReusableSkill | null> {
 export async function listSkills(limit = 100): Promise<ReusableSkill[]> {
   const rows = await (await db()).execute({ sql: "SELECT data FROM skills ORDER BY name LIMIT ?", args: [limit] });
   return rows.rows.map((row) => JSON.parse(String(row.data)) as ReusableSkill);
+}
+
+export async function saveCollaborationRecord(record: CollaborationRecord): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO collaboration_records (id, room_id, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    args: [record.id, record.roomId, record.createdAt, JSON.stringify(record)],
+  });
+}
+
+export async function listCollaborationRecords(roomId?: string, limit = 100): Promise<CollaborationRecord[]> {
+  const sql = roomId
+    ? "SELECT data FROM collaboration_records WHERE room_id = ? ORDER BY created_at DESC LIMIT ?"
+    : "SELECT data FROM collaboration_records ORDER BY created_at DESC LIMIT ?";
+  const args = roomId ? [roomId, limit] : [limit];
+  const rows = await (await db()).execute({ sql, args });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as CollaborationRecord);
 }
