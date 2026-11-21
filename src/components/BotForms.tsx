@@ -194,6 +194,17 @@ export function BotForm({ bot, onDone }: { bot?: Bot; onDone?: (bot: Bot) => voi
             ]}
           />
         </Field>
+        {form.approval === "controlled" && (
+          <Field label="Pre-approved tool names">
+            <input
+              className={inputClass}
+              value={(form.controlledTools ?? []).join(", ")}
+              onChange={(event) => set("controlledTools", event.target.value.split(",").map((tool) => tool.trim()).filter(Boolean))}
+              placeholder="Exact runtime tool names, comma separated"
+            />
+            <p className="mt-1 text-[12px] text-mute">Every other action waits for explicit approval.</p>
+          </Field>
+        )}
 
         {bot && (
           <div className="pt-2">

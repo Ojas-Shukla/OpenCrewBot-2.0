@@ -280,6 +280,16 @@ export async function saveExecutionRun(run: ExecutionRun): Promise<void> {
       args: [run.status, JSON.stringify({ ...workflowRun, ...run }), run.id],
     });
   }
+  const scheduledRows = await client.execute("SELECT id, data FROM scheduled_workflows");
+  for (const row of scheduledRows.rows) {
+    const schedule = JSON.parse(String(row.data)) as ScheduledWorkflow;
+    if (schedule.lastExecutionId !== run.id) continue;
+    const updated = { ...schedule, lastRunStatus: run.status, updatedAt: new Date().toISOString() };
+    await client.execute({
+      sql: "UPDATE scheduled_workflows SET status = ?, data = ? WHERE id = ?",
+      args: [updated.status, JSON.stringify(updated), String(row.id)],
+    });
+  }
 }
 
 export async function getExecutionRun(id: string): Promise<ExecutionRun | null> {

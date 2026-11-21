@@ -235,7 +235,7 @@ export async function executeExecution(id: string): Promise<void> {
             const output = outputOf(message);
             if (message?.status === "done" && output) return { success: true, value: output };
             return { success: false, error: message?.error ?? (message ? "Agent returned no text output." : "Execution was interrupted before the agent started.") };
-          });
+          }, async () => (await getExecutionRun(id))?.status !== "cancelled");
           if ((await getExecutionRun(id))?.status === "cancelled") {
             task.status = "cancelled";
             task.error = "Cancelled by the user.";

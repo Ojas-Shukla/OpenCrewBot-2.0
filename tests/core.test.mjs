@@ -23,6 +23,18 @@ test("retry uses fallback candidates and returns on the first successful attempt
   assert.deepEqual(result, { success: true, value: "recovered", attempts: 2 });
 });
 
+test("retry does not start fallback attempts after cancellation", async () => {
+  const attempted = [];
+  let shouldContinue = true;
+  const result = await retryWithFallback(["primary", "fallback"], 3, async (model) => {
+    attempted.push(model);
+    shouldContinue = false;
+    return { success: false, error: "cancelled" };
+  }, async () => shouldContinue);
+  assert.deepEqual(attempted, ["primary"]);
+  assert.equal(result.attempts, 1);
+});
+
 test("interrupted tasks are reopened with a bounded retry count", () => {
   const recovered = recoverInterruptedTask({ status: "running", attempts: 3, maxAttempts: 3 });
   assert.deepEqual(recovered, {

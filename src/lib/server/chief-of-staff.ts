@@ -1,4 +1,4 @@
-import type { Bot, ExecutionTaskInput } from "@/lib/shared/types";
+import type { ExecutionTaskInput } from "@/lib/shared/types";
 import { getSetting, listBots, setSetting } from "./db";
 import { createExecution, executeExecution } from "./execution";
 import { runTurn } from "./runtime";

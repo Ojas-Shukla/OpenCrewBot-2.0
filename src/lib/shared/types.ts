@@ -278,6 +278,7 @@ export interface ScheduledWorkflow {
   nextRunAt?: string;
   lastRunAt?: string;
   lastRunStatus?: ExecutionRunStatus;
+  lastExecutionId?: string;
   createdAt: string;
   updatedAt: string;
 }

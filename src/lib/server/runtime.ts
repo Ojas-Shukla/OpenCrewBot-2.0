@@ -426,7 +426,8 @@ export function runTurn(request: TurnRequest): Promise<ChatMessage | null> {
 }
 
 async function executeTurn({ bot, conversationId, content, route }: TurnRequest): Promise<ChatMessage> {
-  const latest = (await getBot(bot.id)) ?? bot;
+  const stored = await getBot(bot.id);
+  const latest = stored ? { ...stored, model: bot.model !== stored.model ? bot.model : stored.model } : bot;
   const k = key(conversationId, latest.id);
   const folder = new TurnFolder(conversationId, latest, route);
   setRunning(conversationId, latest.id, true);

@@ -75,3 +75,42 @@ const cancelledPlan = await request("/api/executions", {
 const cancelled = await request(`/api/executions/${cancelledPlan.execution.id}/cancel`, { method: "POST" });
 if (cancelled.execution.status !== "cancelled") throw new Error("Execution cancellation did not persist.");
 console.log("PASS execution cancellation");
+
+const workflow = await request("/api/workflows", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    name: `Smoke workflow ${Date.now()}`,
+    description: "Scheduled workflow persistence probe.",
+    instruction: "Produce a short status summary.",
+    taskTemplates: [{
+      key: "summary",
+      title: "Write status summary",
+      description: "Return a one-sentence status summary.",
+      assignedBotId: bootstrap.bots[0].id,
+    }],
+  }),
+});
+const schedule = await request("/api/workflows/scheduled", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    name: `Smoke schedule ${Date.now()}`,
+    workflowId: workflow.workflow.id,
+    cron: "0 0 1 1 *",
+  }),
+});
+const scheduledRun = await request(`/api/workflows/scheduled/${schedule.schedule.id}`, { method: "POST" });
+let workflowExecution;
+for (let attempt = 0; attempt < 30; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  workflowExecution = await request(`/api/executions/${scheduledRun.execution.id}`);
+  if (!["running", "pending", "planned"].includes(workflowExecution.execution.run.status)) break;
+}
+if (workflowExecution.execution.run.status !== "completed") {
+  throw new Error(`Scheduled workflow execution did not complete: ${workflowExecution.execution.run.status}`);
+}
+const scheduleHistory = await request("/api/workflows/scheduled");
+const persistedSchedule = scheduleHistory.schedules.find((item) => item.id === schedule.schedule.id);
+if (persistedSchedule?.lastRunStatus !== "completed") throw new Error("Scheduled workflow completion status did not persist.");
+console.log("PASS scheduled workflow run and completion status");

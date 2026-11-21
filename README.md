@@ -44,7 +44,7 @@ OpenCrewBot treats AI as a messaging app. Every contact in the sidebar is a bot 
 
 Give each bot a name, a role, instructions, a model and a set of tools. Each reply shows its tokens and cost.
 
-**Choose the model from the bot's Details.** **Change** opens a model sheet with three suggested picks (fastest, best all-rounder, strongest) and every model in Nebius Token Factory's live catalog, with search, context size, tool support and price. A new model applies from the bot's next reply, with no restart. Automatic routing, where Jev picks a model for each message, is coming soon.
+**Choose the model from the bot's Details.** **Change** opens a model sheet with the available models, search, context size, tool support and price when known. OpenAI-compatible endpoints can be added through server configuration. Executions try their task model, agent model and configured fallbacks in order when a model call fails. Automatic per-message model routing is not provided.
 
 The details panel keeps a short summary of the bot, with the full editor one click away. Changes apply from the bot's next reply.
 
@@ -82,7 +82,7 @@ _The Memory tab is the file itself. The panel refreshes live when the bot writes
 
 ### Ask before acting
 
-On **Ask first**, a bot stops before each browser action and shows an approval card in chat. **Allow once** runs it; **Deny** skips it and the bot carries on. Bots can also pause to ask you a question, with suggested answers as buttons, and resume when you reply. **Full access** acts without asking.
+On **Ask first**, a bot stops before a tool action and shows an approval card in chat. **Allow once** runs it; **Deny** skips it and the bot carries on. **Controlled access** only auto-approves the exact tool names configured for that bot; every other tool still asks. **Full access** acts without asking. Approval decisions are also recorded centrally. Bots can pause to ask you a question, with suggested answers as buttons, and resume when you reply.
 
 <div align="center">
 
@@ -143,7 +143,11 @@ Add your keys to `.env`, then restart `pnpm dev`. Every key is optional:
 
 | Variable | What it turns on |
 | --- | --- |
-| `NEBIUS_API_KEY` | Real models from [Nebius Token Factory](https://tokenfactory.nebius.com). Without it, bots use the mock model. |
+| `NEBIUS_API_KEY` | Real models from [Nebius Token Factory](https://tokenfactory.nebius.com). Without either this or a compatible provider, bots use the mock model. |
+| `OPENCREWBOT_OPENAI_COMPATIBLE_BASE_URL` | Optional OpenAI-compatible API endpoint. |
+| `OPENCREWBOT_OPENAI_COMPATIBLE_API_KEY` | API key for the compatible endpoint. |
+| `OPENCREWBOT_OPENAI_COMPATIBLE_PROVIDER_ID` | Optional provider prefix (default `openai-compatible`). |
+| `OPENCREWBOT_OPENAI_COMPATIBLE_MODELS` | Comma-separated model IDs exposed by the compatible endpoint. |
 | `TAVILY_API_KEY` | Web search, page reading and site crawls. |
 | `BROWSERBASE_API_KEY` | Cloud browsers for bots with the Browser tool. |
 | `BROWSERBASE_PROJECT_ID` | Optional. Inferred from the key when empty. |
@@ -191,7 +195,9 @@ It assumes one local owner and has no sign-in. To keep it that way, `pnpm dev` a
 | Code mode | Multi-tool TypeScript in a QuickJS sandbox with no filesystem or network access |
 | Mock mode | A scripted model that exercises the real tools, approvals and streaming without any keys |
 
-**What's been verified.** On October 13 and 14, 2026, these were tested locally with the mock model: streaming, tool calls, memory writes, approvals (Allow, Deny, and Stop while waiting), question cards, room @mentions and hand-offs, restart recovery, and the production build. The Browserbase path was tested by driving a local Chrome over the same CDP connection. MCP servers were tested against DeepWiki's public server (add, test, and loading its tools into a bot). The live model list comes from Token Factory, and Mastra's router was checked to accept every model on it. **Still to verify with live services:** Composio sign-in and app actions, Browserbase sessions, Jev routing, and how reliably each open model calls tools.
+**Orchestration and scheduling.** The Chief of Staff asks the selected planner agent for a dependency-aware JSON plan, validates assigned agents and dependencies, and falls back to contributions from the configured specialist roster if the response is invalid. The execution engine runs ready tasks concurrently, retries with configured model candidates, and recovers interrupted tasks. Skills add their declared built-in capabilities to the agent runtime. Rooms persist intermediate outputs and run a bounded peer review. Cron expressions use five fields and UTC; the scheduler is process-local, with persisted leases to reduce duplicate runs across instances. For production or serverless deployments, use a durable external scheduler/worker.
+
+**What's been verified.** The mock-mode smoke suite checks the seeded agent/room/skill counts, planner output, approval rejection persistence, shared memory, execution cancellation, and a scheduled workflow run through completion. Unit tests cover cron validation, fallback retries, cancellation between retry attempts, interrupted-task recovery, parallel-ready tasks, and controlled access. Live integrations still require separate credentials and verification; the mock tests do not prove external actions work.
 
 ### Extending it
 

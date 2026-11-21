@@ -8,10 +8,14 @@ export async function retryWithFallback<T>(
   candidates: string[],
   maxAttempts: number,
   run: (model: string, attempt: number) => Promise<RetryResult<T>>,
+  shouldContinue: () => Promise<boolean> = async () => true,
 ): Promise<{ success: boolean; value?: T; error?: string; attempts: number }> {
   if (!candidates.length) throw new Error("At least one model candidate is required.");
   let error: string | undefined;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  let attempts = 0;
+  while (attempts < maxAttempts && await shouldContinue()) {
+    const attempt = attempts;
+    attempts += 1;
     try {
       const result = await run(candidates[attempt % candidates.length], attempt + 1);
       if (result.success) return { ...result, attempts: attempt + 1 };
@@ -20,7 +24,11 @@ export async function retryWithFallback<T>(
       error = caught instanceof Error ? caught.message : String(caught);
     }
   }
-  return { success: false, error, attempts: maxAttempts };
+  return {
+    success: false,
+    error: error ?? "No model attempt was made because the execution was cancelled.",
+    attempts,
+  };
 }
 
 export function recoverInterruptedTask<T extends {

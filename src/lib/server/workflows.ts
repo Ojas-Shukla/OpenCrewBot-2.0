@@ -102,9 +102,15 @@ export async function runScheduledWorkflow(id: string): Promise<ExecutionRun> {
     projectId: workflow.id,
   });
   await saveWorkflowRun({ ...execution, workflowId: workflow.id });
-  void executeExecution(execution.id).catch((error) => console.error("[scheduled-workflow]", error));
   const now = new Date().toISOString();
-  await saveScheduledWorkflow({ ...schedule, lastRunAt: now, lastRunStatus: "running", updatedAt: now });
+  await saveScheduledWorkflow({
+    ...schedule,
+    lastRunAt: now,
+    lastRunStatus: "running",
+    lastExecutionId: execution.id,
+    updatedAt: now,
+  });
+  void executeExecution(execution.id).catch((error) => console.error("[scheduled-workflow]", error));
   return execution;
 }
 
