@@ -1,6 +1,6 @@
 // Types shared by the server and the browser. Everything here is plain JSON.
 
-export type ApprovalMode = "ask" | "full";
+export type ApprovalMode = "ask" | "controlled" | "full";
 
 export interface BotTools {
   /** Tavily search, extract and crawl. */
@@ -215,4 +215,71 @@ export interface ExecutionTaskInput {
   assignedBotId: string;
   dependencies?: string[];
   maxAttempts?: number;
+}
+
+export type MemoryScope = "individual" | "room" | "project" | "user";
+
+export interface MemoryRecord {
+  id: string;
+  scope: MemoryScope;
+  ownerId: string;
+  content: string;
+  source: string;
+  reason: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled" | "expired";
+
+export interface ApprovalRequest {
+  id: string;
+  botId: string;
+  conversationId?: string;
+  runId?: string;
+  taskId?: string;
+  toolName: string;
+  action: string;
+  preview: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolution?: "allow_once" | "reject";
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  instruction: string;
+  taskTemplates: ExecutionTaskInput[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ScheduledWorkflowStatus = "active" | "paused";
+
+export interface ScheduledWorkflow {
+  id: string;
+  name: string;
+  workflowId: string;
+  cron: string;
+  status: ScheduledWorkflowStatus;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastRunStatus?: ExecutionRunStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReusableSkill {
+  id: string;
+  name: string;
+  category: "research" | "analysis" | "writing" | "development" | "sales";
+  description: string;
+  instructions: string;
+  outputFormat: string;
+  tools: string[];
+  createdAt: string;
+  updatedAt: string;
 }

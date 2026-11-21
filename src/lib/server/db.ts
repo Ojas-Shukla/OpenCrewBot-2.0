@@ -2,7 +2,19 @@
 // its own store (mastra.db) for each bot's model-facing thread history.
 import { createClient, type Client } from "@libsql/client";
 import { APP_DB_URL } from "./config";
-import type { Bot, ChatMessage, ConversationId, Room, ExecutionRun, ExecutionTask } from "@/lib/shared/types";
+import type {
+  ApprovalRequest,
+  Bot,
+  ChatMessage,
+  ConversationId,
+  ExecutionRun,
+  ExecutionTask,
+  MemoryRecord,
+  Room,
+  ScheduledWorkflow,
+  ReusableSkill,
+  WorkflowTemplate,
+} from "@/lib/shared/types";
 
 // Cached across hot reloads, together with the file it points at, so a
 // changed database path opens a fresh connection instead of reusing one
@@ -10,7 +22,7 @@ import type { Bot, ChatMessage, ConversationId, Room, ExecutionRun, ExecutionTas
 const g = globalThis as unknown as { __opencrewbotDb?: { url: string; schema?: number; client: Promise<Client> } };
 
 /** Bump when a table is added, so a hot-reloaded server re-runs the CREATE statements. */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 async function open(): Promise<Client> {
   const db = createClient({ url: APP_DB_URL });
@@ -50,6 +62,20 @@ async function open(): Promise<Client> {
         id TEXT PRIMARY KEY, event_type TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
       )`,
       "CREATE INDEX IF NOT EXISTS audit_events_by_created ON audit_events (created_at)",
+      `CREATE TABLE IF NOT EXISTS workflow_templates (
+        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS scheduled_workflows (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS scheduled_workflows_by_status ON scheduled_workflows (status, created_at)",
+      `CREATE TABLE IF NOT EXISTS workflow_runs (
+        id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS workflow_runs_by_workflow ON workflow_runs (workflow_id, created_at)",
+      `CREATE TABLE IF NOT EXISTS skills (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+      )`,
     ],
     "write",
   );
@@ -260,4 +286,112 @@ export async function writeAuditEvent(event: { id: string; type: string; created
 export async function listAuditEvents(limit = 100): Promise<Array<{ id: string; type: string; createdAt: string; data: unknown }>> {
   const rows = await (await db()).execute({ sql: "SELECT id, event_type, created_at, data FROM audit_events ORDER BY created_at DESC LIMIT ?", args: [limit] });
   return rows.rows.map((row) => ({ id: String(row.id), type: String(row.event_type), createdAt: String(row.created_at), data: JSON.parse(String(row.data)) }));
+}
+
+// ── memory provenance ──────────────────────────────────────────────────
+
+export async function saveMemoryRecord(record: MemoryRecord): Promise<void> {
+  await (await db()).execute({
+    sql: `INSERT INTO memory_records (id, scope, owner_id, created_at, data)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET scope = excluded.scope, owner_id = excluded.owner_id, data = excluded.data`,
+    args: [record.id, record.scope, record.ownerId, record.createdAt, JSON.stringify(record)],
+  });
+}
+
+export async function listMemoryRecords(scope?: string, ownerId?: string, limit = 100): Promise<MemoryRecord[]> {
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (scope) {
+    where.push("scope = ?");
+    args.push(scope);
+  }
+  if (ownerId) {
+    where.push("owner_id = ?");
+    args.push(ownerId);
+  }
+  args.push(limit);
+  const sql = `SELECT data FROM memory_records${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`;
+  const rows = await (await db()).execute({ sql, args });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as MemoryRecord);
+}
+
+// ── approvals ──────────────────────────────────────────────────────────
+
+export async function saveApprovalRequest(request: ApprovalRequest): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO approval_requests (id, status, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
+    args: [request.id, request.status, request.createdAt, JSON.stringify(request)],
+  });
+}
+
+export async function getApprovalRequest(id: string): Promise<ApprovalRequest | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM approval_requests WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as ApprovalRequest : null;
+}
+
+export async function listApprovalRequests(limit = 100): Promise<ApprovalRequest[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM approval_requests ORDER BY created_at DESC LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ApprovalRequest);
+}
+
+// ── workflow templates and schedules ────────────────────────────────────
+
+export async function saveWorkflowTemplate(workflow: WorkflowTemplate): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO workflow_templates (id, created_at, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    args: [workflow.id, workflow.createdAt, JSON.stringify(workflow)],
+  });
+}
+
+export async function getWorkflowTemplate(id: string): Promise<WorkflowTemplate | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM workflow_templates WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as WorkflowTemplate : null;
+}
+
+export async function listWorkflowTemplates(limit = 100): Promise<WorkflowTemplate[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM workflow_templates ORDER BY created_at DESC LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as WorkflowTemplate);
+}
+
+export async function saveScheduledWorkflow(workflow: ScheduledWorkflow): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO scheduled_workflows (id, status, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
+    args: [workflow.id, workflow.status, workflow.createdAt, JSON.stringify(workflow)],
+  });
+}
+
+export async function getScheduledWorkflow(id: string): Promise<ScheduledWorkflow | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM scheduled_workflows WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as ScheduledWorkflow : null;
+}
+
+export async function listScheduledWorkflows(limit = 100): Promise<ScheduledWorkflow[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM scheduled_workflows ORDER BY created_at DESC LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ScheduledWorkflow);
+}
+
+export async function saveWorkflowRun(run: ExecutionRun & { workflowId: string }): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO workflow_runs (id, workflow_id, status, created_at, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
+    args: [run.id, run.workflowId, run.status, run.createdAt, JSON.stringify(run)],
+  });
+}
+
+// ── reusable skills ────────────────────────────────────────────────────
+
+export async function saveSkill(skill: ReusableSkill): Promise<void> {
+  await (await db()).execute({
+    sql: "INSERT INTO skills (id, name, category, created_at, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, category = excluded.category, data = excluded.data",
+    args: [skill.id, skill.name, skill.category, skill.createdAt, JSON.stringify(skill)],
+  });
+}
+
+export async function getSkill(id: string): Promise<ReusableSkill | null> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM skills WHERE id = ?", args: [id] });
+  return rows.rows[0] ? JSON.parse(String(rows.rows[0].data)) as ReusableSkill : null;
+}
+
+export async function listSkills(limit = 100): Promise<ReusableSkill[]> {
+  const rows = await (await db()).execute({ sql: "SELECT data FROM skills ORDER BY name LIMIT ?", args: [limit] });
+  return rows.rows.map((row) => JSON.parse(String(row.data)) as ReusableSkill);
 }

@@ -6,7 +6,7 @@
 
 ## In progress
 
-- [ ] Phase 1 - Database architecture
+- [x] Phase 1 - Database architecture
 
 ## Planned
 
