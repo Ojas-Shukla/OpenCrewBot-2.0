@@ -4,7 +4,8 @@ import { getBot, getExecutionRun, listExecutionRuns, listExecutionTasks, saveExe
 import { InputError } from "./errors";
 import { runTurn, stopConversation } from "./runtime";
 import { readSharedMemory } from "./memory-files";
-import { routeModelForTask } from "./models";
+import { findModel, modelCandidatesForTask } from "./models";
+import { readyTasks, recoverInterruptedTask, retryWithFallback } from "./execution-policy";
 
 const activeRuns = new Set<string>();
 
@@ -33,7 +34,7 @@ function assertAcyclic(tasks: Array<ExecutionTaskInput & { id: string }>) {
   for (const task of tasks) visit(task.id);
 }
 
-export async function createExecution(input: { name: string; instruction: string; tasks: ExecutionTaskInput[] }): Promise<ExecutionRun> {
+export async function createExecution(input: { name: string; instruction: string; tasks: ExecutionTaskInput[]; projectId?: string }): Promise<ExecutionRun> {
   const name = input.name?.trim();
   const instruction = input.instruction?.trim();
   if (!name || name.length > 120) throw new InputError("Execution name is required and must be under 120 characters.");
@@ -61,6 +62,7 @@ export async function createExecution(input: { name: string; instruction: string
     if (task.timeoutMs !== undefined && (!Number.isInteger(task.timeoutMs) || task.timeoutMs < 1000 || task.timeoutMs > 900000)) {
       throw new InputError("timeoutMs must be an integer from 1,000 to 900,000.");
     }
+    if (task.model && !(await findModel(task.model))) throw new InputError(`Task model "${task.model}" is not configured.`);
   }
 
   const runId = randomUUID();
@@ -75,9 +77,10 @@ export async function createExecution(input: { name: string; instruction: string
     attempts: 0,
     maxAttempts: task.maxAttempts ?? 2,
     timeoutMs: task.timeoutMs,
+    model: task.model,
     createdAt,
   }));
-  const run: ExecutionRun = { id: runId, name, instruction, status: "planned", taskIds: tasks.map((task) => task.id), createdAt };
+  const run: ExecutionRun = { id: runId, name, instruction, status: "planned", taskIds: tasks.map((task) => task.id), createdAt, projectId: input.projectId };
   await saveExecutionRun(run);
   for (const task of tasks) await saveExecutionTask(task);
   await audit("execution.created", { runId, taskIds: run.taskIds, taskCount: tasks.length });
@@ -148,10 +151,9 @@ export async function executeExecution(id: string): Promise<void> {
   // A task left running by a process crash is safe to retry: its last result
   // was never committed as completed. Keep its attempt count for bounded retry.
   for (const task of persistedTasks) {
-    if (task.status === "running") {
-      task.status = "pending";
-      task.error = "Recovered after an interrupted server process.";
-      if (task.attempts >= task.maxAttempts) task.attempts = Math.max(0, task.maxAttempts - 1);
+    const recovered = recoverInterruptedTask(task);
+    if (recovered) {
+      Object.assign(task, recovered);
       await saveExecutionTask(task);
     }
   }
@@ -178,7 +180,7 @@ export async function executeExecution(id: string): Promise<void> {
         }
       }
 
-      const ready = tasks.filter((task) => task.status === "pending" && task.dependencies.every((dep) => completed.has(dep)));
+      const ready = readyTasks(tasks, completed);
       if (ready.length) {
         changed = true;
         await Promise.all(ready.map(async (task) => {
@@ -205,41 +207,45 @@ export async function executeExecution(id: string): Promise<void> {
             `Task: ${task.title}`,
             task.description,
             priorOutputs ? `Completed prerequisite work:\n${priorOutputs}` : "",
-            `Shared project memory:\n${readSharedMemory("project", id).trim() || "(empty)"}`,
+            `Shared project memory:\n${readSharedMemory("project", run.projectId ?? "default").trim() || "(empty)"}`,
             "Complete only this task. Make your output self-contained, identify uncertainty, and do not claim actions you did not perform.",
           ].filter(Boolean).join("\n\n");
-          const routedBot = {
-            ...bot,
-            model: await routeModelForTask(bot, `${task.title}\n${task.description}`),
-          };
+          const modelCandidates = await modelCandidatesForTask(bot, task.model);
 
-          let succeeded = false;
-          while (task.attempts < task.maxAttempts && !succeeded) {
+          const attemptsBefore = task.attempts;
+          const result = await retryWithFallback(modelCandidates, task.maxAttempts - attemptsBefore, async (model) => {
             task.attempts += 1;
-            let message: Awaited<ReturnType<typeof runTurn>> | null = null;
             const conversationId = `execution:${id}`;
+            const routedBot = { ...bot, model };
             const turn = runTurn({ bot: routedBot, conversationId, content: prompt });
+            let message: Awaited<ReturnType<typeof runTurn>> | null;
             if (task.timeoutMs) {
               const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), task.timeoutMs));
               message = await Promise.race([turn, timeout]);
               if (!message) {
                 await stopConversation(conversationId);
-                task.error = `Task timed out after ${task.timeoutMs} milliseconds.`;
-                continue;
+                return { success: false, error: `Task timed out after ${task.timeoutMs} milliseconds.` };
               }
             } else {
               message = await turn;
             }
-            const output = outputOf(message);
-            if (message?.status === "done" && output) {
-              task.output = output;
-              task.status = "completed";
-              succeeded = true;
-            } else {
-              task.error = message?.error ?? (message ? "Agent returned no text output." : "Execution was interrupted before the agent started.");
+            if ((await getExecutionRun(id))?.status === "cancelled") {
+              return { success: false, error: "Execution cancelled." };
             }
+            const output = outputOf(message);
+            if (message?.status === "done" && output) return { success: true, value: output };
+            return { success: false, error: message?.error ?? (message ? "Agent returned no text output." : "Execution was interrupted before the agent started.") };
+          });
+          if ((await getExecutionRun(id))?.status === "cancelled") {
+            task.status = "cancelled";
+            task.error = "Cancelled by the user.";
+          } else if (result.success && result.value) {
+            task.output = result.value;
+            task.status = "completed";
+          } else {
+            task.error = result.error;
+            task.status = "failed";
           }
-          if (!succeeded) task.status = "failed";
           task.completedAt = new Date().toISOString();
           await saveExecutionTask(task);
           await audit(`execution.task.${task.status}`, { runId: id, taskId: task.id, attempts: task.attempts, error: task.error });
@@ -263,7 +269,12 @@ export async function executeExecution(id: string): Promise<void> {
     }
 
     tasks = await listExecutionTasks(id);
-    run.status = tasks.every((task) => task.status === "completed") ? "completed" : "failed";
+    const latestRun = await getExecutionRun(id);
+    if (latestRun?.status === "cancelled") {
+      run.status = "cancelled";
+    } else {
+      run.status = tasks.every((task) => task.status === "completed") ? "completed" : "failed";
+    }
     if (run.status === "failed") run.error = "One or more tasks failed or were blocked. Inspect task-level errors and retry the execution.";
     run.completedAt = new Date().toISOString();
     await saveExecutionRun(run);

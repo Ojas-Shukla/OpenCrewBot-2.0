@@ -1,11 +1,20 @@
 import type { Bot, ExecutionTaskInput } from "@/lib/shared/types";
-import { listBots } from "./db";
+import { getSetting, listBots, setSetting } from "./db";
 import { createExecution, executeExecution } from "./execution";
 import { runTurn } from "./runtime";
 import { readSharedMemory } from "./memory-files";
+import { InputError } from "./errors";
 
-function plannerBot(bots: Bot[]): Bot {
-  return bots.find((bot) => /chief|planner|planning|atlas/i.test(`${bot.title} ${bot.name}`)) ?? bots[0];
+export async function chiefOfStaffConfiguration() {
+  const bots = await listBots();
+  const configuredId = await getSetting<string>("chiefOfStaffBotId");
+  const planner = bots.find((bot) => bot.id === configuredId) ?? bots[0];
+  return { plannerBotId: planner?.id ?? null, bots };
+}
+
+export async function setChiefOfStaffBot(botId: string) {
+  if (!(await listBots()).some((bot) => bot.id === botId)) throw new Error("Selected planner agent does not exist.");
+  await setSetting("chiefOfStaffBotId", botId);
 }
 
 function parsePlan(text: string): Record<string, unknown> | null {
@@ -26,13 +35,16 @@ function parsePlan(text: string): Record<string, unknown> | null {
   return null;
 }
 
-export async function planAndExecute(input: { name?: string; instruction: string; execute?: boolean }) {
+export async function planAndExecute(input: { name?: string; instruction: string; execute?: boolean; plannerBotId?: string }) {
   const instruction = input.instruction?.trim();
   if (!instruction) throw new Error("Provide an instruction.");
   const bots = await listBots();
   if (!bots.length) throw new Error("Create at least one agent before planning.");
 
-  const planner = plannerBot(bots);
+  const configured = await getSetting<string>("chiefOfStaffBotId");
+  const plannerId = input.plannerBotId || configured;
+  const planner = bots.find((bot) => bot.id === plannerId) ?? bots[0];
+  if (input.plannerBotId && !bots.some((bot) => bot.id === input.plannerBotId)) throw new InputError("Selected planner agent does not exist.");
   const projectName = input.name?.trim() || "default";
   const shared = readSharedMemory("project", projectName).trim();
   const roster = bots.map((bot) => ({
@@ -46,7 +58,7 @@ export async function planAndExecute(input: { name?: string; instruction: string
   const prompt = [
     "You are the Chief of Staff. Produce one dependency-aware execution plan.",
     "Return only JSON:",
-    '{"executionName":"name","tasks":[{"key":"unique-key","title":"title","description":"specific task","assignedBotId":"existing bot id","dependencies":["other-key"],"maxAttempts":2,"timeoutMs":120000}]}',
+    '{"executionName":"name","tasks":[{"key":"unique-key","title":"title","description":"specific task","assignedBotId":"existing bot id","dependencies":["other-key"],"maxAttempts":2,"timeoutMs":120000,"model":"configured model id"}]}',
     `Existing agents:\n${JSON.stringify(roster)}`,
     shared ? `Shared project memory:\n${shared.slice(0, 16000)}` : "",
     `Instruction:\n${instruction}`,
@@ -74,6 +86,7 @@ export async function planAndExecute(input: { name?: string; instruction: string
         dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
         maxAttempts: Number.isInteger(task.maxAttempts) ? Number(task.maxAttempts) : 2,
         timeoutMs: Number.isInteger(task.timeoutMs) ? Number(task.timeoutMs) : 120000,
+        model: typeof task.model === "string" ? task.model : undefined,
       }))
       .filter((task) => task.key && task.title && task.description && ids.has(task.assignedBotId));
     if (candidates.length) {
@@ -83,14 +96,30 @@ export async function planAndExecute(input: { name?: string; instruction: string
   }
 
   if (!tasks.length) {
-    tasks = [
-      { key: "analyse", title: "Analyse objective", description: `Analyse this instruction and identify the required evidence, decisions and deliverable:\n${instruction}`, assignedBotId: planner.id },
-      { key: "execute", title: "Complete objective", description: `Use the available context and tools to complete the objective:\n${instruction}`, assignedBotId: planner.id, dependencies: ["analyse"] },
-      { key: "consolidate", title: "Consolidate result", description: "Combine work into one concise, actionable deliverable and identify unresolved uncertainties.", assignedBotId: planner.id, dependencies: ["execute"] },
-    ];
+    const specialists = bots.filter((bot) => bot.id !== planner.id);
+    const selected = specialists.length ? specialists : [planner];
+    tasks = selected.map((bot) => ({
+      key: `agent-${bot.id}`,
+      title: `Independent contribution: ${bot.title || bot.name}`,
+      description: [
+        `Contribute from your configured role as ${bot.title || bot.name}.`,
+        bot.description,
+        bot.instructions,
+        `Objective:\n${instruction}`,
+      ].filter(Boolean).join("\n\n"),
+      assignedBotId: bot.id,
+      maxAttempts: 2,
+    }));
+    tasks.push({
+      key: "consolidate",
+      title: "Consolidate team contributions",
+      description: "Review every independent contribution, identify conflicts and gaps, and assemble one final deliverable.",
+      assignedBotId: planner.id,
+      dependencies: selected.map((bot) => `agent-${bot.id}`),
+    });
   }
 
-  const execution = await createExecution({ name: executionName, instruction, tasks });
+  const execution = await createExecution({ name: executionName, instruction, tasks, projectId: projectName });
   if (input.execute) void executeExecution(execution.id).catch((error) => console.error("[chief-of-staff]", error));
   return { execution, tasks };
 }

@@ -130,7 +130,7 @@ export interface ModelOption {
 
 export interface AppStatus {
   mock: boolean;
-  keys: { nebius: boolean; tavily: boolean; jev: boolean; browserbase: boolean; composio: boolean };
+  keys: { nebius: boolean; openaiCompatible: boolean; tavily: boolean; jev: boolean; browserbase: boolean; composio: boolean };
   dataDir: string;
 }
 
@@ -198,6 +198,7 @@ export interface ExecutionTask {
   completedAt?: string;
   createdAt: string;
   timeoutMs?: number;
+  model?: string;
 }
 
 export interface ExecutionRun {
@@ -210,6 +211,7 @@ export interface ExecutionRun {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  projectId?: string;
 }
 
 export interface ExecutionTaskInput {
@@ -221,6 +223,7 @@ export interface ExecutionTaskInput {
   dependencies?: string[];
   maxAttempts?: number;
   timeoutMs?: number;
+  model?: string;
 }
 
 export type MemoryScope = "individual" | "room" | "project" | "user";

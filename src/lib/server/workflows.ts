@@ -3,6 +3,7 @@ import type { ExecutionRun, ExecutionTaskInput, ScheduledWorkflow, WorkflowTempl
 import { InputError } from "./errors";
 import {
   getBot,
+  claimWorkflowSchedule,
   getWorkflowTemplate,
   listScheduledWorkflows,
   listWorkflowRuns,
@@ -12,6 +13,7 @@ import {
   saveWorkflowTemplate,
 } from "./db";
 import { createExecution, executeExecution } from "./execution";
+import { nextCronRun, validateCron } from "./cron";
 
 function validateTaskTemplates(tasks: ExecutionTaskInput[]) {
   if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 30) throw new InputError("A workflow needs between 1 and 30 task templates.");
@@ -46,21 +48,14 @@ export function workflows() {
   return listWorkflowTemplates();
 }
 
-function nextRunAt(cron: string, from = new Date()): string {
-  if (cron === "@hourly") return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-  if (cron === "@daily") return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  if (cron.startsWith("*/")) {
-    const minutes = Number(cron.split(" ")[0].slice(2));
-    if (Number.isFinite(minutes) && minutes > 0) return new Date(from.getTime() + minutes * 60 * 1000).toISOString();
-  }
-  if (/^[0-9]+ \* \* \* \*$/.test(cron)) return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-  if (/^[0-9]+ [0-9]+ \* \* \*$/.test(cron)) return new Date(from.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  return new Date(from.getTime() + 60 * 60 * 1000).toISOString();
-}
-
 export async function createScheduledWorkflow(input: { name: string; workflowId: string; cron: string }): Promise<ScheduledWorkflow> {
   if (!input.name?.trim()) throw new InputError("Schedule name is required.");
   if (!input.cron?.trim()) throw new InputError("A cron expression is required.");
+  try {
+    validateCron(input.cron.trim());
+  } catch (error) {
+    throw new InputError(error instanceof Error ? error.message : "Invalid cron expression.");
+  }
   if (!(await getWorkflowTemplate(input.workflowId))) throw new InputError("Workflow template not found.");
   const now = new Date().toISOString();
   const schedule: ScheduledWorkflow = {
@@ -69,7 +64,7 @@ export async function createScheduledWorkflow(input: { name: string; workflowId:
     workflowId: input.workflowId,
     cron: input.cron.trim(),
     status: "active",
-    nextRunAt: nextRunAt(input.cron.trim()),
+    nextRunAt: nextCronRun(input.cron.trim()).toISOString(),
     createdAt: now,
     updatedAt: now,
   };
@@ -83,7 +78,7 @@ export async function setScheduledWorkflowStatus(id: string, status: "active" | 
   const updated = {
     ...schedule,
     status,
-    nextRunAt: status === "active" ? (schedule.nextRunAt ?? nextRunAt(schedule.cron)) : schedule.nextRunAt,
+    nextRunAt: status === "active" ? (schedule.nextRunAt ?? nextCronRun(schedule.cron).toISOString()) : schedule.nextRunAt,
     updatedAt: new Date().toISOString(),
   };
   await saveScheduledWorkflow(updated);
@@ -104,6 +99,7 @@ export async function runScheduledWorkflow(id: string): Promise<ExecutionRun> {
     name: `${schedule.name}: ${workflow.name}`,
     instruction: workflow.instruction,
     tasks: workflow.taskTemplates,
+    projectId: workflow.id,
   });
   await saveWorkflowRun({ ...execution, workflowId: workflow.id });
   void executeExecution(execution.id).catch((error) => console.error("[scheduled-workflow]", error));
@@ -127,10 +123,15 @@ export function startWorkflowScheduler(): void {
     for (const schedule of await listScheduledWorkflows()) {
       if (schedule.status !== "active" || !schedule.nextRunAt || Date.parse(schedule.nextRunAt) > now) continue;
       try {
+        const nowIso = new Date(now).toISOString();
+        const leaseUntil = new Date(now + 2 * 60 * 1000).toISOString();
+        if (!(await claimWorkflowSchedule(schedule.id, nowIso, leaseUntil))) continue;
         await runScheduledWorkflow(schedule.id);
+        const refreshed = (await listScheduledWorkflows()).find((item) => item.id === schedule.id);
+        if (!refreshed || refreshed.status !== "active") continue;
         await saveScheduledWorkflow({
-          ...schedule,
-          nextRunAt: nextRunAt(schedule.cron),
+          ...refreshed,
+          nextRunAt: nextCronRun(schedule.cron).toISOString(),
           updatedAt: new Date().toISOString(),
         });
       } catch (error) {

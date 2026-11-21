@@ -22,6 +22,12 @@ export async function resolveApprovalRequest(id: string, resolution: "allow_once
   const request = await getApprovalRequest(id);
   if (!request) throw new InputError("Approval request not found.");
   if (request.status !== "pending") throw new InputError("This approval request has already been resolved.");
+  if (request.conversationId && request.botId && request.toolCallId) {
+    const runtime = await import("./runtime");
+    await runtime.respondToApproval(request.conversationId, request.botId, request.toolCallId, resolution === "allow_once");
+    const current = await getApprovalRequest(id);
+    if (current && current.status !== "pending") return current;
+  }
   const resolvedAt = new Date().toISOString();
   const resolved: ApprovalRequest = {
     ...request,
@@ -31,14 +37,6 @@ export async function resolveApprovalRequest(id: string, resolution: "allow_once
   };
   await saveApprovalRequest(resolved);
   await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: resolved });
-  if (resolved.conversationId && resolved.botId && resolved.toolCallId) {
-    const runtime = await import("./runtime");
-    if (resolution === "allow_once") {
-      await runtime.respondToApproval(resolved.conversationId, resolved.botId, resolved.toolCallId, true);
-    } else {
-      await runtime.respondToApproval(resolved.conversationId, resolved.botId, resolved.toolCallId, false);
-    }
-  }
   return resolved;
 }
 

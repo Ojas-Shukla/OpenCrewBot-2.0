@@ -77,8 +77,10 @@ export const api = {
     call<{ execution: ExecutionRun }>("/api/executions", { method: "POST", json: input }),
   runExecution: (id: string) => call<{ ok: boolean }>(`/api/executions/${id}/run`, { method: "POST" }),
   cancelExecution: (id: string) => call<{ execution: ExecutionRun }>(`/api/executions/${id}/cancel`, { method: "POST" }),
-  chiefOfStaff: (instruction: string, execute = false) =>
-    call<{ execution: ExecutionRun; tasks: ExecutionTask[] }>("/api/chief-of-staff", { method: "POST", json: { instruction, execute } }),
+  chiefOfStaffConfig: () => call<{ plannerBotId: string | null; bots: Bot[] }>("/api/chief-of-staff"),
+  setChiefOfStaffBot: (plannerBotId: string) => call("/api/chief-of-staff", { method: "PUT", json: { plannerBotId } }),
+  chiefOfStaff: (instruction: string, execute = false, plannerBotId?: string) =>
+    call<{ execution: ExecutionRun; tasks: ExecutionTask[] }>("/api/chief-of-staff", { method: "POST", json: { instruction, execute, plannerBotId } }),
   factory: (instruction: string, name?: string, model?: string) =>
     call<{ bot: Bot }>("/api/bots/factory", { method: "POST", json: { instruction, name, model } }),
   skills: () => call<{ skills: ReusableSkill[] }>("/api/skills"),
@@ -89,6 +91,8 @@ export const api = {
   createWorkflow: (input: { name: string; description: string; instruction: string; taskTemplates: Array<{ key: string; title: string; description: string; assignedBotId: string; dependencies?: string[] }> }) =>
     call<{ workflow: WorkflowTemplate }>("/api/workflows", { method: "POST", json: input }),
   schedules: () => call<{ schedules: ScheduledWorkflow[]; runs: ExecutionRun[] }>("/api/workflows/scheduled"),
+  createSchedule: (input: { name: string; workflowId: string; cron: string }) =>
+    call<{ schedule: ScheduledWorkflow }>("/api/workflows/scheduled", { method: "POST", json: input }),
   setScheduleStatus: (id: string, status: "active" | "paused") =>
     call<{ schedule: ScheduledWorkflow }>(`/api/workflows/scheduled/${id}`, { method: "PATCH", json: { status } }),
   runSchedule: (id: string) => call<{ execution: ExecutionRun }>(`/api/workflows/scheduled/${id}`, { method: "POST" }),

@@ -6,6 +6,14 @@ import type { ApprovalRequest, CollaborationRecord, ExecutionRun, ExecutionTask,
 import { useApp } from "./OpenCrewBotApp";
 import { Button, Drawer, inputClass } from "./ui";
 
+interface WorkflowTaskDraft {
+  key: string;
+  title: string;
+  description: string;
+  assignedBotId: string;
+  dependencies: string;
+}
+
 export function OperationsPanel({ onClose }: { onClose: () => void }) {
   const { state, toast, refresh } = useApp();
   const [instruction, setInstruction] = useState("");
@@ -20,20 +28,33 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
   const [memoryContent, setMemoryContent] = useState("");
   const [workflowName, setWorkflowName] = useState("");
   const [workflowInstruction, setWorkflowInstruction] = useState("");
+  const [plannerBotId, setPlannerBotId] = useState("");
+  const [workflowTemplates, setWorkflowTemplates] = useState<Array<{ id: string; name: string }>>([]);
+  const [workflowTasks, setWorkflowTasks] = useState<WorkflowTaskDraft[]>([]);
+  const [scheduleName, setScheduleName] = useState("");
+  const [scheduleWorkflowId, setScheduleWorkflowId] = useState("");
+  const [scheduleCron, setScheduleCron] = useState("@daily");
+  const [workflowRuns, setWorkflowRuns] = useState<ExecutionRun[]>([]);
 
   const reload = async () => {
-    const [executionData, skillData, approvalData, scheduleData, collaborationData] = await Promise.all([
+    const [executionData, skillData, approvalData, scheduleData, collaborationData, chiefData, workflowData] = await Promise.all([
       api.executions(),
       api.skills(),
       api.approvals(),
       api.schedules(),
       api.collaboration(),
+      api.chiefOfStaffConfig(),
+      api.workflows(),
     ]);
     setExecutions(executionData.executions);
     setSkills(skillData.skills);
     setApprovals(approvalData.approvals);
     setSchedules(scheduleData.schedules);
+    setWorkflowRuns(scheduleData.runs);
+    setWorkflowTemplates(workflowData.workflows);
+    setScheduleWorkflowId((current) => current || workflowData.workflows[0]?.id || "");
     setCollaboration(collaborationData.records);
+    setPlannerBotId(chiefData.plannerBotId ?? chiefData.bots[0]?.id ?? "");
   };
 
   useEffect(() => {
@@ -44,7 +65,7 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
   const plan = async (execute: boolean) => {
     if (!instruction.trim()) return;
     try {
-      await api.chiefOfStaff(instruction, execute);
+      await api.chiefOfStaff(instruction, execute, plannerBotId);
       await reload();
       toast(execute ? "Chief of Staff started the workforce." : "Execution plan created.");
     } catch (error) {
@@ -88,31 +109,73 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
   };
 
   const createWorkflow = async () => {
-    if (!workflowName.trim() || !workflowInstruction.trim() || !state.bots.length) return;
+    if (!workflowName.trim() || !workflowInstruction.trim() || !workflowTasks.length) return;
     try {
-      const botId = state.bots[0].id;
       await api.createWorkflow({
         name: workflowName,
-        description: "Reusable workforce workflow",
+        description: workflowInstruction,
         instruction: workflowInstruction,
-        taskTemplates: [
-          { key: "analyse", title: "Analyse objective", description: workflowInstruction, assignedBotId: botId },
-          { key: "complete", title: "Complete objective", description: "Complete the objective using the available evidence and tools.", assignedBotId: botId, dependencies: ["analyse"] },
-          { key: "consolidate", title: "Consolidate output", description: "Combine findings into one final report.", assignedBotId: botId, dependencies: ["complete"] },
-        ],
+        taskTemplates: workflowTasks.map((task) => ({
+          key: task.key,
+          title: task.title,
+          description: task.description,
+          assignedBotId: task.assignedBotId,
+          dependencies: task.dependencies.split(",").map((dependency) => dependency.trim()).filter(Boolean),
+        })),
       });
       setWorkflowName("");
       setWorkflowInstruction("");
+      setWorkflowTasks([]);
+      await reload();
       toast("Workflow template created.");
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't create workflow.");
     }
   };
 
+  const createSchedule = async () => {
+    if (!scheduleName.trim() || !scheduleWorkflowId) return;
+    try {
+      await api.createSchedule({ name: scheduleName, workflowId: scheduleWorkflowId, cron: scheduleCron });
+      setScheduleName("");
+      await reload();
+      toast("Schedule created.");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Couldn't create schedule.");
+    }
+  };
+
+  const addWorkflowTask = () => {
+    const defaultBotId = state.bots[0]?.id;
+    if (!defaultBotId) {
+      toast("Create an agent before adding workflow tasks.");
+      return;
+    }
+    setWorkflowTasks((tasks) => [...tasks, {
+      key: `task-${crypto.randomUUID()}`,
+      title: "",
+      description: "",
+      assignedBotId: defaultBotId,
+      dependencies: "",
+    }]);
+  };
+
   return (
     <Drawer title="Workforce operations" onClose={onClose}>
       <section>
         <h3 className="text-[12.5px] font-medium text-mute">Chief of Staff</h3>
+        <label className="mt-2 block text-[12px] text-mute" htmlFor="planner-agent">Planner agent</label>
+        <select
+          id="planner-agent"
+          value={plannerBotId}
+          onChange={(event) => {
+            setPlannerBotId(event.target.value);
+            void api.setChiefOfStaffBot(event.target.value).catch((error) => toast(error instanceof Error ? error.message : "Couldn't save planner."));
+          }}
+          className={`${inputClass} mt-1`}
+        >
+          {state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name} · {bot.title}</option>)}
+        </select>
         <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} className={`${inputClass} mt-2 min-h-28 resize-y`} placeholder="Describe a complex business objective…" />
         <div className="mt-2 flex gap-2">
           <Button size="sm" onClick={() => void plan(false)}>Create plan</Button>
@@ -213,7 +276,32 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
         <h3 className="text-[12.5px] font-medium text-mute">Scheduled workflows</h3>
         <input value={workflowName} onChange={(event) => setWorkflowName(event.target.value)} className={`${inputClass} mt-2`} placeholder="Workflow name" />
         <textarea value={workflowInstruction} onChange={(event) => setWorkflowInstruction(event.target.value)} className={`${inputClass} mt-2 min-h-20 resize-y`} placeholder="Recurring objective…" />
+        <div className="mt-2 space-y-2">
+          {workflowTasks.map((task, index) => (
+            <div key={task.key} className="rounded-2xl bg-raised p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[12px] text-mute">Task {index + 1} · {task.key}</span>
+                <Button size="sm" variant="danger" onClick={() => setWorkflowTasks((tasks) => tasks.filter((item) => item.key !== task.key))}>Remove</Button>
+              </div>
+              <input aria-label="Task title" value={task.title} onChange={(event) => setWorkflowTasks((tasks) => tasks.map((item) => item.key === task.key ? { ...item, title: event.target.value } : item))} className={`${inputClass} mt-2`} placeholder="Task title" />
+              <textarea aria-label="Task description" value={task.description} onChange={(event) => setWorkflowTasks((tasks) => tasks.map((item) => item.key === task.key ? { ...item, description: event.target.value } : item))} className={`${inputClass} mt-2 min-h-16 resize-y`} placeholder="Task instructions" />
+              <select aria-label="Assigned agent" value={task.assignedBotId} onChange={(event) => setWorkflowTasks((tasks) => tasks.map((item) => item.key === task.key ? { ...item, assignedBotId: event.target.value } : item))} className={`${inputClass} mt-2`}>
+                {state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name} · {bot.title}</option>)}
+              </select>
+              <input aria-label="Task dependencies" value={task.dependencies} onChange={(event) => setWorkflowTasks((tasks) => tasks.map((item) => item.key === task.key ? { ...item, dependencies: event.target.value } : item))} className={`${inputClass} mt-2`} placeholder="Dependency keys, comma separated" />
+            </div>
+          ))}
+        </div>
+        <Button className="mt-2" size="sm" onClick={addWorkflowTask}>Add task</Button>
         <Button className="mt-2" size="sm" onClick={() => void createWorkflow()}>Create workflow template</Button>
+        <h4 className="mt-5 text-[12.5px] font-medium text-mute">Schedule a workflow</h4>
+        <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} className={`${inputClass} mt-2`} placeholder="Schedule name" />
+        <select value={scheduleWorkflowId} onChange={(event) => setScheduleWorkflowId(event.target.value)} className={`${inputClass} mt-2`}>
+          <option value="">Select workflow template</option>
+          {workflowTemplates.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
+        </select>
+        <input value={scheduleCron} onChange={(event) => setScheduleCron(event.target.value)} className={`${inputClass} mt-2`} placeholder="Cron expression (UTC)" />
+        <Button className="mt-2" size="sm" onClick={() => void createSchedule()}>Create schedule</Button>
         <div className="mt-2 space-y-2">
           {schedules.map((schedule) => (
             <div key={schedule.id} className="flex items-center justify-between rounded-2xl bg-raised p-3">
@@ -225,6 +313,15 @@ export function OperationsPanel({ onClose }: { onClose: () => void }) {
             </div>
           ))}
           {!schedules.length && <p className="text-[13px] text-mute">No schedules yet.</p>}
+        </div>
+        <h4 className="mt-5 text-[12.5px] font-medium text-mute">Workflow run history</h4>
+        <div className="mt-2 space-y-2">
+          {workflowRuns.map((run) => (
+            <div key={run.id} className="rounded-xl bg-raised px-3 py-2 text-[12.5px]">
+              <span>{run.name}</span><span className="ml-2 text-mute">{run.status}</span>
+            </div>
+          ))}
+          {!workflowRuns.length && <p className="text-[13px] text-mute">No workflow runs yet.</p>}
         </div>
       </section>
     </Drawer>

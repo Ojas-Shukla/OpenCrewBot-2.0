@@ -10,10 +10,11 @@ import { Memory } from "@mastra/memory";
 import { randomUUID } from "node:crypto";
 import type { Bot, ChatMessage, ConversationId, Part, RouteNote } from "@/lib/shared/types";
 import { MASTRA_DB_URL, OWNER_ID, isMock } from "./config";
-import { conversationGeneration, getBot, listSkills, saveMessage } from "./db";
+import { conversationGeneration, getBot, listApprovalRequests, listSkills, saveApprovalRequest, saveMessage, writeAuditEvent } from "./db";
 import { createApprovalRequest } from "./approvals";
+import { mayAutoApprove } from "./execution-policy";
 import { publish } from "./bus";
-import { costUsd, findModel } from "./models";
+import { costUsd, findModel, resolveModelConfiguration } from "./models";
 import { createMockModel } from "./mock-model";
 import { announceLiveView, createSession, releaseSession } from "./browserbase";
 import { buildConnectorTools, connectionsVersion } from "./connectors";
@@ -71,6 +72,8 @@ async function signatureOf(bot: Bot): Promise<string> {
   return JSON.stringify({
     tools: bot.tools,
     approval: bot.approval,
+    controlledTools: bot.controlledTools ?? [],
+    skillIds: bot.skillIds ?? [],
     connections: bot.connections,
     connectionsVersion: bot.connections.length ? await connectionsVersion() : 0,
     mock: isMock(),
@@ -96,10 +99,21 @@ async function createBrowser(bot: Bot): Promise<MastraBrowser | undefined> {
 async function buildRuntime(bot: Bot): Promise<BotRuntime> {
   const holder = { bot };
   const memory = new Memory({ storage: state.storage, options: { lastMessages: 40 } });
-  const builtIn = buildTools(bot);
-  const connectors = await buildConnectorTools(bot, `bot-${bot.id}-${Date.now()}`);
   const skills = await listSkills();
   const loadedSkills = skills.filter((skill) => (bot.skillIds ?? []).includes(skill.id));
+  const skillToolNames = new Set(loadedSkills.flatMap((skill) => skill.tools));
+  const skillEnabledBot: Bot = {
+    ...bot,
+    tools: {
+      ...bot.tools,
+      webSearch: bot.tools.webSearch || skillToolNames.has("web_search"),
+      codeMode: bot.tools.codeMode || skillToolNames.has("code_mode"),
+      browser: bot.tools.browser || skillToolNames.has("browser"),
+      memory: bot.tools.memory || skillToolNames.has("memory"),
+    },
+  };
+  const builtIn = buildTools(skillEnabledBot);
+  const connectors = await buildConnectorTools(bot, `bot-${bot.id}-${Date.now()}`);
   const skillCapabilities = loadedSkills.map((skill) =>
     `Loaded skill "${skill.name}": ${skill.description}\nInstructions: ${skill.instructions}\nOutput format: ${skill.outputFormat}`,
   );
@@ -108,11 +122,11 @@ async function buildRuntime(bot: Bot): Promise<BotRuntime> {
     id: `bot-${bot.id}`,
     name: bot.name,
     instructions: () => systemPrompt(holder.bot, capabilities, builtIn.instructions),
-    model: isMock() ? createMockModel(bot.name) : () => `nebius/${holder.bot.model}`,
+    model: isMock() ? createMockModel(bot.name) : () => resolveModelConfiguration(holder.bot.model),
     tools: { ...connectors.tools, ...builtIn.tools },
     memory,
   });
-  const browser = await createBrowser(bot);
+  const browser = await createBrowser(skillEnabledBot);
   const controller = new AgentController({
     id: `controller-${bot.id}`,
     agent,
@@ -173,7 +187,7 @@ async function sessionFor(bot: Bot, conversationId: ConversationId): Promise<Ses
   const session = await runtime.controller.createSession({ resourceId: OWNER_ID, scope: conversationId, threadId });
   await session.permissions.setForCategory({ category: "read", policy: "allow" });
   await session.permissions.setForCategory({ category: "edit", policy: "allow" });
-  await session.permissions.setForCategory({ category: "other", policy: "allow" });
+  await session.permissions.setForCategory({ category: "other", policy: bot.approval === "full" ? "allow" : "ask" });
   // Connected apps and MCP servers act on real accounts: ask first unless the bot has full access.
   await session.permissions.setForCategory({ category: "mcp", policy: bot.approval === "full" ? "allow" : "ask" });
   await session.permissions.setForCategory({
@@ -290,18 +304,25 @@ class TurnFolder {
           part = this.tool(event.toolCallId);
         }
         part!.status = "awaiting-approval";
-        void createApprovalRequest({
-          botId: this.bot.id,
-          conversationId: this.message.conversationId,
-          toolName: event.toolName,
-          toolCallId: event.toolCallId,
-          action: part!.label,
-          preview: typeof event.args === "string" ? event.args : JSON.stringify(event.args ?? {}).slice(0, 4000),
-        }).catch((error) => console.error("[approval]", error));
-        if (this.bot.approval === "controlled" && (this.bot.controlledTools ?? []).includes(event.toolName)) {
+        void (async () => {
+          const approval = await createApprovalRequest({
+            botId: this.bot.id,
+            conversationId: this.message.conversationId,
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+            action: part!.label,
+            preview: typeof event.args === "string" ? event.args : JSON.stringify(event.args ?? {}).slice(0, 4000),
+          });
           const session = state.sessions.get(key(this.message.conversationId, this.bot.id));
-          if (session) void session.respondToToolApproval({ toolCallId: event.toolCallId, decision: "approve" });
-        }
+          if (!session) throw new Error("Approval arrived after its session was closed.");
+          const controlled = mayAutoApprove(this.bot.approval, this.bot.controlledTools ?? [], event.toolName);
+          if (controlled) {
+            const resolvedAt = new Date().toISOString();
+            await saveApprovalRequest({ ...approval, status: "approved", resolution: "allow_once", resolvedAt });
+            await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: { ...approval, status: "approved", resolution: "allow_once" } });
+          }
+          if (controlled) await session.respondToToolApproval({ toolCallId: event.toolCallId, decision: "approve" });
+        })().catch((error) => console.error("[approval]", error));
         this.emit(true);
         break;
       }
@@ -436,6 +457,15 @@ export async function respondToApproval(conversationId: ConversationId, botId: s
   const session = state.sessions.get(key(conversationId, botId));
   if (!session) throw new Error("That request is no longer waiting. The bot may have restarted.");
   await session.respondToToolApproval({ toolCallId, decision: approve ? "approve" : "decline" });
+  const pending = (await listApprovalRequests()).find((request) =>
+    request.conversationId === conversationId && request.botId === botId && request.toolCallId === toolCallId && request.status === "pending",
+  );
+  if (pending) {
+    const resolvedAt = new Date().toISOString();
+    const status = approve ? "approved" : "rejected";
+    await saveApprovalRequest({ ...pending, status, resolution: approve ? "allow_once" : "reject", resolvedAt });
+    await writeAuditEvent({ id: randomUUID(), type: "approval.resolved", createdAt: resolvedAt, data: { ...pending, status } });
+  }
 }
 
 export async function answerQuestion(conversationId: ConversationId, botId: string, toolCallId: string, answer: string) {

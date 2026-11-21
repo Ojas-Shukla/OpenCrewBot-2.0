@@ -1,7 +1,8 @@
 // Group rooms: decide who answers, give each bot the part of the room it
 // hasn't seen, and let a bot hand off to a teammate by @mentioning them.
+import { randomUUID } from "node:crypto";
 import type { Bot, ChatMessage, Room, RouteNote } from "@/lib/shared/types";
-import { listBots, listMessages, listCollaborationRecords } from "./db";
+import { listBots, listMessages, listCollaborationRecords, saveCollaborationRecord } from "./db";
 import { pickResponders } from "./jev";
 import { runTurn, stopEpochOf } from "./runtime";
 import { readSharedMemory } from "./memory-files";
@@ -19,6 +20,26 @@ export function messageText(message: ChatMessage): string {
     .map((p) => (p as { text: string }).text)
     .join("\n")
     .trim();
+}
+
+async function recordCollaboration(
+  room: Room,
+  fromBotId: string,
+  type: "handoff" | "intermediate" | "challenge" | "verification" | "review",
+  content: string,
+  toBotId?: string,
+) {
+  await saveCollaborationRecord({
+    id: randomUUID(),
+    roomId: room.id,
+    fromBotId,
+    toBotId,
+    type,
+    content,
+    status: "resolved",
+    createdAt: new Date().toISOString(),
+    resolvedAt: new Date().toISOString(),
+  });
 }
 
 function mentionsIn(text: string, members: Bot[]): Bot[] {
@@ -102,26 +123,49 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
   const { bots: responders, route } = await decideResponders(room, members, messageText(userMessage), history, bots);
 
   const initial = responders.map((bot) => ({ bot, route, depth: 0 }));
-  await Promise.all(initial.map(async ({ bot, route: note }) => {
+  const initialResults = await Promise.all(initial.map(async ({ bot, route: note }) => {
     const transcript = await listMessages(conversationId, 60);
-    await runTurn({
+    const reply = await runTurn({
       bot,
       conversationId,
       content: roomPrompt(room, bot, members, catchUp(transcript, bot, bots), note.by === "handoff", collaborationRecords),
       route: note,
     });
+    if (reply && reply.status === "done") {
+      await recordCollaboration(room, bot.id, "intermediate", messageText(reply));
+    }
+    return { bot, reply };
   }));
 
   const queue: Array<{ bot: Bot; route: RouteNote; depth: number }> = [];
   const transcriptAfterParallel = await listMessages(conversationId, 60);
-  for (const { bot } of initial) {
-    const ownReplies = transcriptAfterParallel.filter((message) => message.botId === bot.id && message.role === "bot");
-    const latest = ownReplies.at(-1);
+  for (const { bot, reply } of initialResults) {
+    const latest = reply ?? transcriptAfterParallel.filter((message) => message.botId === bot.id && message.role === "bot").at(-1);
     if (!latest) continue;
     for (const next of mentionsIn(messageText(latest), members)) {
       if (next.id === bot.id || queue.some((item) => item.bot.id === next.id)) continue;
       queue.push({ bot: next, route: { by: "handoff" }, depth: 1 });
+      await recordCollaboration(room, bot.id, "handoff", messageText(latest), next.id);
     }
+  }
+  const responderIds = new Set(initial.map(({ bot }) => bot.id));
+  const reviewer = members.find((bot) => !responderIds.has(bot.id));
+  if (reviewer && stopEpochOf(conversationId) === epoch) {
+    const transcript = await listMessages(conversationId, 60);
+    const summary = transcript.filter((message) => message.role === "bot" && message.status === "done")
+      .map((message) => `${authorName(message, bots)}: ${messageText(message)}`).join("\n\n");
+    const review = await runTurn({
+      bot: reviewer,
+      conversationId,
+      content: [
+        `Review the other agents' work in "${room.name}".`,
+        "Check for unsupported claims, contradictions, missing perspectives and unaddressed user requirements.",
+        "If you find a material issue, challenge it with a concise explanation. Otherwise state what you verified and any remaining uncertainty.",
+        `Contributions:\n${summary}`,
+      ].join("\n\n"),
+      route: { by: "handoff" },
+    });
+    if (review && review.status === "done") await recordCollaboration(room, reviewer.id, "verification", messageText(review));
   }
   while (queue.length && stopEpochOf(conversationId) === epoch) {
     const { bot, route: note, depth } = queue.shift()!;
@@ -133,9 +177,11 @@ export async function runRoom(room: Room, userMessage: ChatMessage): Promise<voi
       route: note,
     });
     if (!reply || reply.status !== "done" || depth >= MAX_HANDOFF_DEPTH) continue;
+    await recordCollaboration(room, bot.id, "intermediate", messageText(reply));
     for (const next of mentionsIn(messageText(reply), members)) {
       if (next.id === bot.id || queue.some((q) => q.bot.id === next.id)) continue;
       queue.push({ bot: next, route: { by: "handoff" }, depth: depth + 1 });
+      await recordCollaboration(room, bot.id, "handoff", messageText(reply), next.id);
     }
   }
 }

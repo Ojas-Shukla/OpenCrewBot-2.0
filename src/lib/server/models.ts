@@ -2,6 +2,7 @@
 // Mastra's model router uses) keeps the picker useful before a key is added;
 // with NEBIUS_API_KEY set, the live Token Factory list decides what's available.
 import type { ModelOption } from "@/lib/shared/types";
+import { keys, isMock } from "./config";
 
 export const DEFAULT_MODEL = "MiniMaxAI/MiniMax-M3";
 
@@ -35,6 +36,27 @@ function label(id: string): string {
 
 function fromRow([id, context, tools, reasoning, vision, inPerM, outPerM]: Row, live = false): ModelOption {
   return { id, label: label(id), provider: id.split("/")[0], context, tools, reasoning, vision, inputPerM: inPerM, outputPerM: outPerM, live };
+}
+
+function compatibleOptions(): ModelOption[] {
+  if (!process.env.OPENCREWBOT_OPENAI_COMPATIBLE_BASE_URL || !process.env.OPENCREWBOT_OPENAI_COMPATIBLE_API_KEY) return [];
+  const provider = process.env.OPENCREWBOT_OPENAI_COMPATIBLE_PROVIDER_ID || "openai-compatible";
+  return (process.env.OPENCREWBOT_OPENAI_COMPATIBLE_MODELS ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .map((model) => ({
+      id: `openai-compatible:${model}`,
+      label: model,
+      provider,
+      context: 0,
+      tools: true,
+      reasoning: false,
+      vision: false,
+      inputPerM: null,
+      outputPerM: null,
+      live: true,
+    }));
 }
 
 const staticOptions = STATIC.map((r) => fromRow(r));
@@ -98,13 +120,37 @@ export async function listModels(fresh = false): Promise<ModelOption[]> {
   const cached = g.__opencrewbotModels;
   if (!fresh && cached && Date.now() - cached.at < LIVE_TTL_MS) return cached.options;
   const live = await fetchLive();
-  const options = (live ?? staticOptions).slice().sort((a, b) => Number(b.tools) - Number(a.tools) || a.id.localeCompare(b.id));
+  const catalog = live ?? (keys.nebius() || isMock() ? staticOptions : []);
+  const options = [...catalog, ...compatibleOptions()]
+    .slice()
+    .sort((a, b) => Number(b.tools) - Number(a.tools) || a.id.localeCompare(b.id));
   if (live) g.__opencrewbotModels = { at: Date.now(), options };
   return options;
 }
 
 export async function findModel(id: string): Promise<ModelOption | undefined> {
-  return (await listModels()).find((m) => m.id === id) ?? staticOptions.find((m) => m.id === id);
+  return (await listModels()).find((m) => m.id === id) ?? staticOptions.find((m) => m.id === id) ?? compatibleOptions().find((m) => m.id === id);
+}
+
+export function resolveModelConfiguration(id: string): string | { id: `${string}/${string}`; url: string; apiKey: string } {
+  if (id.startsWith("openai-compatible:")) {
+    const url = process.env.OPENCREWBOT_OPENAI_COMPATIBLE_BASE_URL;
+    const apiKey = process.env.OPENCREWBOT_OPENAI_COMPATIBLE_API_KEY;
+    const modelId = id.slice("openai-compatible:".length);
+    const providerId = process.env.OPENCREWBOT_OPENAI_COMPATIBLE_PROVIDER_ID || "openai-compatible";
+    if (!url || !apiKey || !modelId) throw new Error("OpenAI-compatible model requires its URL, API key and model ID in server environment.");
+    return { id: `${providerId}/${modelId}`, url, apiKey };
+  }
+  return `nebius/${id}`;
+}
+
+export async function modelCandidatesForTask(bot: { model: string; fallbackModels?: string[] }, taskModel?: string): Promise<string[]> {
+  const all = [...new Set([taskModel, bot.model, ...(bot.fallbackModels ?? [])].filter((value): value is string => Boolean(value)))];
+  const options = await listModels();
+  const available = new Set(options.map((model) => model.id));
+  const candidates = all.filter((model) => available.has(model));
+  if (candidates.length) return candidates;
+  throw new Error(`No configured model is available for this task. Tried: ${all.join(", ") || "(none)"}.`);
 }
 
 export function costUsd(model: ModelOption | undefined, input: number, output: number): number | null {

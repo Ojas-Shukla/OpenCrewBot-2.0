@@ -20,6 +20,7 @@ export const OWNER_ID = "owner";
 
 export const keys = {
   nebius: () => Boolean(process.env.NEBIUS_API_KEY),
+  openaiCompatible: () => Boolean(process.env.OPENCREWBOT_OPENAI_COMPATIBLE_BASE_URL && process.env.OPENCREWBOT_OPENAI_COMPATIBLE_API_KEY),
   tavily: () => Boolean(process.env.TAVILY_API_KEY),
   jev: () => Boolean(process.env.TYPESAFE_API_KEY),
   browserbase: () => Boolean(process.env.BROWSERBASE_API_KEY),
@@ -27,12 +28,12 @@ export const keys = {
 };
 
 /** Without a Nebius key, bots run on a scripted local model so the UI still works. */
-export const isMock = () => !keys.nebius();
+export const isMock = () => !keys.nebius() && !keys.openaiCompatible();
 
 export function appStatus(): AppStatus {
   return {
     mock: isMock(),
-    keys: { nebius: keys.nebius(), tavily: keys.tavily(), jev: keys.jev(), browserbase: keys.browserbase(), composio: keys.composio() },
+    keys: { nebius: keys.nebius(), openaiCompatible: keys.openaiCompatible(), tavily: keys.tavily(), jev: keys.jev(), browserbase: keys.browserbase(), composio: keys.composio() },
     dataDir: DATA_DIR,
   };
 }

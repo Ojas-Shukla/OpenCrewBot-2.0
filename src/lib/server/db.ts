@@ -23,7 +23,7 @@ import type {
 const g = globalThis as unknown as { __opencrewbotDb?: { url: string; schema?: number; client: Promise<Client> } };
 
 /** Bump when a table is added, so a hot-reloaded server re-runs the CREATE statements. */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 async function open(): Promise<Client> {
   const db = createClient({ url: APP_DB_URL });
@@ -70,6 +70,9 @@ async function open(): Promise<Client> {
         id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
       )`,
       "CREATE INDEX IF NOT EXISTS scheduled_workflows_by_status ON scheduled_workflows (status, created_at)",
+      `CREATE TABLE IF NOT EXISTS workflow_schedule_leases (
+        schedule_id TEXT PRIMARY KEY, claimed_until TEXT NOT NULL
+      )`,
       `CREATE TABLE IF NOT EXISTS workflow_runs (
         id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
       )`,
@@ -264,10 +267,19 @@ export async function bumpGeneration(conversationId: ConversationId): Promise<nu
 // ── durable execution records ──────────────────────────────────────────
 
 export async function saveExecutionRun(run: ExecutionRun): Promise<void> {
-  await (await db()).execute({
+  const client = await db();
+  await client.execute({
     sql: "INSERT INTO execution_runs (id, status, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, data = excluded.data",
     args: [run.id, run.status, run.createdAt, JSON.stringify(run)],
   });
+  const workflowRows = await client.execute({ sql: "SELECT data FROM workflow_runs WHERE id = ?", args: [run.id] });
+  if (workflowRows.rows[0]) {
+    const workflowRun = JSON.parse(String(workflowRows.rows[0].data)) as ExecutionRun & { workflowId: string };
+    await client.execute({
+      sql: "UPDATE workflow_runs SET status = ?, data = ? WHERE id = ?",
+      args: [run.status, JSON.stringify({ ...workflowRun, ...run }), run.id],
+    });
+  }
 }
 
 export async function getExecutionRun(id: string): Promise<ExecutionRun | null> {
@@ -389,6 +401,16 @@ export async function getScheduledWorkflow(id: string): Promise<ScheduledWorkflo
 export async function listScheduledWorkflows(limit = 100): Promise<ScheduledWorkflow[]> {
   const rows = await (await db()).execute({ sql: "SELECT data FROM scheduled_workflows ORDER BY created_at DESC LIMIT ?", args: [limit] });
   return rows.rows.map((row) => JSON.parse(String(row.data)) as ScheduledWorkflow);
+}
+
+export async function claimWorkflowSchedule(scheduleId: string, now: string, leaseUntil: string): Promise<boolean> {
+  const result = await (await db()).execute({
+    sql: `INSERT INTO workflow_schedule_leases (schedule_id, claimed_until) VALUES (?, ?)
+          ON CONFLICT(schedule_id) DO UPDATE SET claimed_until = excluded.claimed_until
+          WHERE workflow_schedule_leases.claimed_until <= ?`,
+    args: [scheduleId, leaseUntil, now],
+  });
+  return result.rowsAffected > 0;
 }
 
 export async function saveWorkflowRun(run: ExecutionRun & { workflowId: string }): Promise<void> {

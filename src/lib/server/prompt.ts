@@ -1,5 +1,5 @@
 import type { Bot } from "@/lib/shared/types";
-import { memoryForPrompt } from "./memory-files";
+import { memoryForPrompt, readSharedMemory } from "./memory-files";
 
 export function systemPrompt(bot: Bot, capabilities: string[], toolInstructions: string[]): string {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
@@ -38,6 +38,11 @@ export function systemPrompt(bot: Bot, capabilities: string[], toolInstructions:
       ].join("\n"),
     );
   }
+
+  const sharedUserMemory = readSharedMemory("user", "owner").trim();
+  const defaultProjectMemory = readSharedMemory("project", "default").trim();
+  if (sharedUserMemory) sections.push(`## Shared user memory\n${sharedUserMemory.slice(0, 8000)}`);
+  if (defaultProjectMemory) sections.push(`## Shared project memory\n${defaultProjectMemory.slice(0, 8000)}`);
 
   sections.push(...toolInstructions);
   return sections.join("\n\n");

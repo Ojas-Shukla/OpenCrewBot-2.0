@@ -45,6 +45,13 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             what="The open-source models every bot runs on. Without it, bots use a scripted mock model."
             href="https://tokenfactory.nebius.com"
           />
+          <KeyRow
+            name="OpenAI-compatible endpoint"
+            envVar="OPENCREWBOT_OPENAI_COMPATIBLE_*"
+            ok={Boolean(status?.keys.openaiCompatible)}
+            what="Optional fallback provider. Configure a compatible base URL, API key, provider ID and model IDs in .env."
+            href="https://platform.openai.com"
+          />
           <KeyRow name="Tavily" envVar="TAVILY_API_KEY" ok={Boolean(status?.keys.tavily)} what="Web search, page reading and site crawls." href="https://app.tavily.com" />
           <KeyRow
             name="Browserbase"
